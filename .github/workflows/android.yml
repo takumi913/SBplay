@@ -1,37 +1,102 @@
-name: Android checks
+name: Build CS11 APK
+
+# Builds the only deliverable of this branch: an APK for the Lynk & Co CS11 head unit
+# (cs11_19a_h, Android 4.4.3 / API 19, 32-bit ARM). minSdk = targetSdk = 19, armeabi-v7a only.
 on:
   push:
-    branches: [main]
+    branches: [main, 'cs11-api19', 'claude/**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
       - name: Reject credential files in public source
         run: python3 scripts/check_public_tree.py
+
+      # JDK 21 is what the project documents (docs/BUILD.md); gradle.properties forbids toolchain auto-download.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
+          java-version: '21'
+
+      # NDK r25c is the newest NDK that still supports API 19 (r26+ rejects minSdk 19);
+      # cmake 3.22.1 is pinned in shared/build.gradle.
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;25.2.9519653
+          packages: >-
+            platform-tools
+            platforms;android-37.0
+            build-tools;36.0.0
+            ndk;25.2.9519653
+            cmake;3.22.1
+
+      # The committed wrapper points at a China-only mirror that GitHub runners cannot always reach.
+      # Same distribution, same distributionSha256Sum - only the download host changes (CI only).
+      - name: Use the official Gradle distribution host
+        run: sed -i 's#https\\://mirrors.cloud.tencent.com/gradle/#https\\://services.gradle.org/distributions/#' gradle/wrapper/gradle-wrapper.properties && grep distributionUrl gradle/wrapper/gradle-wrapper.properties
+
       - uses: gradle/actions/setup-gradle@v4
-      - name: Unit tests, lint and source-only debug build
-        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest :shared:lintDebug :common:lintDebug :mobile:lintDebug :mobile:assembleDebug --stacktrace
-      - name: Test reports
+
+      # 1) The deliverable. assembleStandaloneDebug = committed identity + debug-signed APK
+      #    (AGP adds the v1/JAR signature because minSdk < 24; Android 4.4 cannot verify v2 only).
+      - name: Build standalone APK (API 19, armeabi-v7a)
+        run: ./gradlew :mobile:clean :mobile:assembleStandaloneDebug --stacktrace
+
+      - name: Verify the APK is installable on API 19
+        run: |
+          set -euo pipefail
+          APK=mobile/build/outputs/apk/debug/mobile-debug.apk
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          test -f "$APK"
+          "$BT/aapt2" dump badging "$APK" | tee badging.txt | grep -E "^(package|sdkVersion|targetSdkVersion|native-code)"
+          grep -q "^sdkVersion:'19'" badging.txt
+          grep -q "^targetSdkVersion:'19'" badging.txt
+          # armeabi-v7a is the only ABI: any other would be dead weight (or a mismatch) on a 32-bit head unit.
+          grep -q "^native-code: 'armeabi-v7a'$" badging.txt
+          "$BT/apksigner" verify --verbose --min-sdk-version 19 --max-sdk-version 19 "$APK" | tee signer.txt
+          grep -q "Verified using v1 scheme (JAR signing): true" signer.txt
+          unzip -l "$APK" | grep -q "assets/offline-mfi/identity.pk8"
+          unzip -l "$APK" | grep -q "assets/offline-mfi/certificate.p7b"
+          ls -l "$APK"
+          cp "$APK" "CS11-LKplay-${GITHUB_SHA::7}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LKplay-CS11-API19-apk
+          path: CS11-LKplay-*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # 2) Gates. Compiling and unit tests prove the code is correct, not that it works on the car.
+      - name: Unit tests (shared + common)
+        run: ./gradlew :shared:testDebugUnitTest :common:testDebugUnitTest --rerun-tasks --stacktrace
+
+      - name: Lint (NewApi blocks the build)
+        run: ./gradlew :shared:lintDebug :common:lintDebug :mobile:lintDebug --stacktrace
+
+      - name: Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
+          name: test-and-lint-reports
           path: |
             shared/build/reports/tests/
             common/build/reports/tests/
             shared/build/reports/lint-results-debug.html
             common/build/reports/lint-results-debug.html
             mobile/build/reports/lint-results-debug.html
+          if-no-files-found: ignore

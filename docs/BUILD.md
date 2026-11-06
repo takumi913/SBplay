@@ -18,6 +18,12 @@
 > - `:mobile:clean` before assembling whenever the APK looks too large: incremental packaging once
 >   produced a 15.87 MB APK carrying ~5 MB of dead zip space (a clean build is ~10.89 MB).
 > - Built artifact: `mobile\build\outputs\apk\debug\mobile-debug.apk`.
+> - **CI**: `.github/workflows/android.yml` ("Build CS11 APK") builds the same
+>   `:mobile:assembleStandaloneDebug` on JDK 21 + NDK 25.2.9519653 + cmake 3.22.1, checks with
+>   `aapt2`/`apksigner` that the APK is `sdkVersion 19` / `targetSdkVersion 19` / `armeabi-v7a` only /
+>   v1-signed / carries the identity, then uploads it as the `LKplay-CS11-API19-apk` artifact
+>   (Actions run page → Artifacts). Unit tests and lint run after the upload as gates.
+>   CI proves it compiles and is installable; it does **not** prove it works — 必须上机复验.
 
 Requirements: JDK 25, Android SDK 37, NDK 28.2.13676358 and the included Gradle wrapper.
 

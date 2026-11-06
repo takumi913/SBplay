@@ -8,10 +8,16 @@ root = Path(__file__).resolve().parents[1]
 names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
 blocked_suffixes = {'.pk8', '.p7b', '.pem', '.key', '.p12', '.pfx', '.jks', '.keystore', '.apk', '.aab'}
 private_block = re.compile(rb'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{40,}')
+# CS11 fork: the software-simulated MFi accessory identity is committed on purpose (docs/BUILD.md),
+# so exactly these two files are allowed; every other credential container still fails the check.
+allowed = {
+    'mobile/src/main/auth-assets/offline-mfi/identity.pk8',
+    'mobile/src/main/auth-assets/offline-mfi/certificate.p7b',
+}
 failures = []
 for name in filter(None, names):
     path = root / name
-    if not path.is_file():
+    if not path.is_file() or name in allowed:
         continue
     if '.private' in path.relative_to(root).parts or path.suffix.lower() in blocked_suffixes:
         failures.append(name)
