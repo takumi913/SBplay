@@ -325,6 +325,13 @@ class CarPlayController(
 
     private var permissionCloseable: Closeable? = null
     private var attachCloseable: Closeable? = null
+    private var detachCloseable: Closeable? = null
+
+    /**
+     * Set when this controller itself asks the iPhone to leave the bus during teardown, so the detach that
+     * follows is not mistaken for the cable being pulled (WiredDetachPolicy).
+     */
+    @Volatile private var teardownDetachExpected = false
     private var listenerLatch = CountDownLatch(1)
     private val teardownComplete = CountDownLatch(1)
 
@@ -518,6 +525,7 @@ class CarPlayController(
         if (config.transport == CarPlayTransport.WIRED) {
             permissionCloseable = iphoneHost.registerPermissionReceiver(::onIphonePermission)
             attachCloseable = iphoneHost.registerAttachReceiver(::onIphoneAttached)
+            detachCloseable = iphoneHost.registerDetachReceiver(::onUsbDetached)
         }
         startMfi()
     }
@@ -716,6 +724,7 @@ class CarPlayController(
         }
         // Deliberately NOT cleared here: close() reads the same field to switch the device off the
         // CarPlay configuration, and it runs right after this call on the teardown thread.
+        teardownDetachExpected = true
         debugLog("wired teardown: asking the iPhone to re-enumerate")
         return try {
             when (val result = iphoneHost.requestCarPlayReenumeration(device)) {
@@ -752,6 +761,7 @@ class CarPlayController(
      */
     fun detachWiredForReconnect(): Boolean {
         val device = wiredDevice ?: return false
+        teardownDetachExpected = true
         val link = userSpaceLink
         userSpaceLink = null
         runCatching { link?.close() }
@@ -1801,6 +1811,29 @@ class CarPlayController(
                     onStatus(CarPlayStatus.WaitingForReenumeration)
                 is IphoneUsbHost.TransitionResult.Failed -> fail(transition.error)
             }
+        }
+    }
+
+    /**
+     * The USB detach broadcast (README gap "USB 拔出广播"). Logged for every Apple device with a stable
+     * `STEP usb/detached` line; it ends the session only when WiredDetachPolicy says the node in use is gone
+     * during an open session. The failure takes the same path as a failed USB read - the host's existing
+     * retry then waits for the phone to be plugged in again - it just no longer depends on a blocked
+     * requestWait() waking up.
+     */
+    private fun onUsbDetached(device: UsbDevice) {
+        val decision = WiredDetachPolicy.decide(
+            detachedDeviceName = device.deviceName,
+            wiredDeviceName = wiredDevice?.deviceName,
+            sessionPhase = phase == Phase.DATAPATHS || phase == Phase.CONTROL,
+            teardownExpected = teardownDetachExpected,
+            closed = closed,
+        )
+        if (device.vendorId == IphoneUsbMatcher.APPLE_VENDOR_ID || decision == WiredDetachPolicy.Decision.END_SESSION) {
+            debugLog("STEP usb/detached: device=${device.deviceName} phase=$phase decision=$decision")
+        }
+        if (decision == WiredDetachPolicy.Decision.END_SESSION) {
+            fail(IphoneUsbException.DeviceUnavailable("iPhone USB cable unplugged (USB_DEVICE_DETACHED)"))
         }
     }
 
@@ -2872,7 +2905,7 @@ class CarPlayController(
     }
 
     private fun closeReceivers() {
-        listOfNotNull(permissionCloseable, attachCloseable).forEach {
+        listOfNotNull(permissionCloseable, attachCloseable, detachCloseable).forEach {
             try {
                 it.close()
             } catch (_: Exception) {
@@ -2881,6 +2914,7 @@ class CarPlayController(
         }
         permissionCloseable = null
         attachCloseable = null
+        detachCloseable = null
     }
 
     private fun closeMfiSession() {

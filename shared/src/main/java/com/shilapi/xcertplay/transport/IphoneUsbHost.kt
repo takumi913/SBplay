@@ -175,6 +175,16 @@ class IphoneUsbHost(
         }
 
     /**
+     * Any USB device leaving the bus (API 12+). Deliberately not filtered by [matcher]: the caller compares
+     * the device node with the one its session opened, which is the only reliable identity here - the
+     * product id can change between the normal and the CarPlay configuration.
+     */
+    fun registerDetachReceiver(onDetached: (UsbDevice) -> Unit): Closeable =
+        registerReceiver(IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)) { intent ->
+            if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) intent.usbDevice()?.let(onDetached)
+        }
+
+    /**
      * Sends the LIVI-evidenced vendor request then closes the connection before re-enumeration.
      * The callback is invoked from [executor].
      */
