@@ -60,13 +60,81 @@ class ConnectionAttemptRecordTest {
         assertNull(ConnectionAttemptRecord.outcome(context, pid))
     }
 
-    @Test fun anActiveSessionClearsEverything() {
+    @Test fun theFirstRenderedFrameClearsEverything() {
         ConnectionAttemptRecord.started(context, wireless = true, keepFailure = false, pid = pid, nowMillis = 1L)
         ConnectionAttemptRecord.failed(context, null, "transient", 2L)
-        ConnectionAttemptRecord.sessionActive(context)
+        ConnectionAttemptRecord.sessionActive(context, 3L)
+        ConnectionAttemptRecord.firstFrame(context)
 
+        assertNull(ConnectionAttemptRecord.load(context))
         assertNull(ConnectionAttemptRecord.outcome(context, pid))
         assertNull(ConnectionAttemptRecord.outcome(context, nextPid))
+    }
+
+    @Test fun anActiveSessionDropsEarlierFailuresButKeepsWaitingForAPicture() {
+        ConnectionAttemptRecord.started(context, wireless = false, keepFailure = false, pid = pid, nowMillis = 1L)
+        ConnectionAttemptRecord.failed(context, null, "transient", 2L)
+        ConnectionAttemptRecord.sessionActive(context, 3L)
+        ConnectionAttemptRecord.progressed(context, "CarPlay 控制通道运行中")
+
+        val attempt = ConnectionAttemptRecord.load(context)!!
+        assertNull(attempt.reason)
+        // Later status lines must not overwrite the step that matters now.
+        assertEquals(ConnectionAttemptRecord.WAITING_FOR_FIRST_FRAME, attempt.stage)
+        // Still waiting in this process: nothing to report yet.
+        assertNull(ConnectionAttemptRecord.outcome(context, pid))
+        assertTrue(ConnectionAttemptRecord.report(context, pid).contains("waiting for the first frame"))
+    }
+
+    @Test fun aSessionThatEndsWithoutAFrameIsReportedAsNoVideo() {
+        ConnectionAttemptRecord.started(context, wireless = false, keepFailure = false, pid = pid, nowMillis = 1L)
+        ConnectionAttemptRecord.sessionActive(context, 5L)
+        ConnectionAttemptRecord.ended(context)
+
+        val outcome = ConnectionAttemptRecord.outcome(context, pid) as ConnectionAttemptOutcome.NoVideo
+        assertFalse(outcome.wireless)
+        assertEquals(5L, outcome.atMillis)
+        assertEquals("上次连接没有画面", ConnectionAttemptRecord.title(outcome))
+        assertTrue(ConnectionAttemptRecord.report(context, pid).contains("outcome=no video"))
+    }
+
+    @Test fun aProcessThatDiedWhileWaitingForAPictureIsNoVideoToo() {
+        ConnectionAttemptRecord.started(context, wireless = true, keepFailure = false, pid = pid, nowMillis = 1L)
+        ConnectionAttemptRecord.sessionActive(context, 5L)
+
+        assertTrue(ConnectionAttemptRecord.outcome(context, nextPid) is ConnectionAttemptOutcome.NoVideo)
+    }
+
+    @Test fun aFailureAfterTheSessionWentActiveStillWins() {
+        ConnectionAttemptRecord.started(context, wireless = false, keepFailure = false, pid = pid, nowMillis = 1L)
+        ConnectionAttemptRecord.sessionActive(context, 5L)
+        ConnectionAttemptRecord.failed(context, null, "USBMUX read failed", 6L)
+        ConnectionAttemptRecord.ended(context)
+
+        val outcome = ConnectionAttemptRecord.outcome(context, pid) as ConnectionAttemptOutcome.Failed
+        assertEquals("USBMUX read failed", outcome.reason)
+        assertEquals(ConnectionAttemptRecord.WAITING_FOR_FIRST_FRAME, outcome.stage)
+    }
+
+    @Test fun aRetryAfterASessionWithoutAPictureKeepsThatAsTheFailure() {
+        ConnectionAttemptRecord.started(context, wireless = false, keepFailure = false, pid = pid, nowMillis = 1L)
+        ConnectionAttemptRecord.sessionActive(context, 5L)
+        ConnectionAttemptRecord.started(context, wireless = false, keepFailure = true, pid = pid, nowMillis = 9L)
+        ConnectionAttemptRecord.progressed(context, "正在与 iPhone 配对")
+
+        val attempt = ConnectionAttemptRecord.load(context)!!
+        assertEquals(ConnectionAttemptRecord.NO_VIDEO_REASON, attempt.reason)
+        assertEquals(5L, attempt.failedAtMillis)
+        assertEquals(0L, attempt.sessionActiveAtMillis)
+        // The retry records its own steps again.
+        assertEquals("正在与 iPhone 配对", attempt.stage)
+    }
+
+    @Test fun noVideoDetailNamesTransportAndSaysThePictureNeverCame() {
+        val detail = ConnectionAttemptRecord.detail(
+            ConnectionAttemptOutcome.NoVideo(wireless = false, stage = null, atMillis = 5L),
+        ) { "11-07 11:18" }
+        assertEquals("USB · 11-07 11:18\n会话已建立，但到会话结束都没有收到 iPhone 的画面。", detail)
     }
 
     @Test fun aProcessThatDiedMidConnectIsReportedAsInterrupted() {

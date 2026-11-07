@@ -635,6 +635,10 @@
     <string name="call_banner_active">通话中</string>
     <string name="call_banner_answer">接听</string>
     <string name="call_banner_end">挂断</string>
+    <string name="waiting_first_frame_title">已建立会话，正在等待 iPhone 发送画面</string>
+    <string name="waiting_first_frame_hint">如果一直没有画面，可以返回首页，或断开后重新连接。</string>
+    <string name="waiting_first_frame_home">返回首页</string>
+    <string name="waiting_first_frame_disconnect">断开连接</string>
 </resources>
 
 

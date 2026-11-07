@@ -16,8 +16,10 @@ import java.util.Locale
  * - 主机界面开始一次新尝试 → [started]（同一界面里的自动重试不清掉已记下的失败）；
  * - 每个连接步骤 → [progressed]，记下“停在哪一步”；
  * - 收到明确的失败状态 → [failed]；
- * - 会话真正建立 → [sessionActive]，整条记录删除；
+ * - 会话建立 → [sessionActive]，记下“已建立会话、等待画面”（首帧看门狗，README 第 4 项）；
+ * - 第一帧真正渲染出来 → [firstFrame]，整条记录删除；
  * - 会话正常收尾（断开、退出）→ [ended]。
+ * 会话建立了却没等到第一帧就结束，就是“没有画面”：同样来自事件（会话结束、第一帧没来），不是超时。
  * 记录里带着写入时的进程号：仍是“进行中”但进程号已经变了，说明上一个进程在连接途中被结束，
  * 这就是“被中断”，它同样来自事件（进程换了），不是超时判断。
  *
@@ -31,6 +33,8 @@ internal data class ConnectionAttempt(
     val stage: String?,
     val reason: String?,
     val failedAtMillis: Long,
+    /** The session went active; the record still existing means no first frame has been rendered yet. */
+    val sessionActiveAtMillis: Long = 0L,
 )
 
 internal sealed class ConnectionAttemptOutcome {
@@ -52,6 +56,13 @@ internal sealed class ConnectionAttemptOutcome {
         override val stage: String?,
         override val atMillis: Long,
     ) : ConnectionAttemptOutcome()
+
+    /** 会话建立了，但到会话结束都没有渲染出第一帧。 */
+    data class NoVideo(
+        override val wireless: Boolean,
+        override val stage: String?,
+        override val atMillis: Long,
+    ) : ConnectionAttemptOutcome()
 }
 
 internal object ConnectionAttemptRecord {
@@ -63,6 +74,11 @@ internal object ConnectionAttemptRecord {
     private const val KEY_STAGE = "stage"
     private const val KEY_REASON = "reason"
     private const val KEY_FAILED_AT = "failed_at"
+    private const val KEY_SESSION_ACTIVE_AT = "session_active_at"
+
+    /** 会话建立后、第一帧之前的步骤文字；首页和主机界面的提示用同一句。 */
+    const val WAITING_FOR_FIRST_FRAME = "已建立会话，正在等待 iPhone 发送画面"
+    const val NO_VIDEO_REASON = "上一轮会话已建立，但没有收到 iPhone 的画面"
 
     /** 首页卡片里一行放得下的长度；完整原因在诊断报告和日志里。 */
     const val HOME_REASON_MAX_CHARS = 80
@@ -84,7 +100,17 @@ internal object ConnectionAttemptRecord {
     ) {
         val prefs = prefs(context)
         val editor = prefs.edit()
-        if (!keepFailure || !prefs.contains(KEY_STARTED_AT)) editor.clear().putLong(KEY_STARTED_AT, nowMillis)
+        if (!keepFailure || !prefs.contains(KEY_STARTED_AT)) {
+            editor.clear().putLong(KEY_STARTED_AT, nowMillis)
+        } else if (prefs.contains(KEY_SESSION_ACTIVE_AT)) {
+            // A retry after a session that never showed a picture: keep that fact as the attempt's failure
+            // (unless a real failure is already recorded) and let the retry record its own steps again.
+            if (!prefs.contains(KEY_REASON)) {
+                editor.putString(KEY_REASON, NO_VIDEO_REASON)
+                    .putLong(KEY_FAILED_AT, prefs.getLong(KEY_SESSION_ACTIVE_AT, nowMillis))
+            }
+            editor.remove(KEY_SESSION_ACTIVE_AT)
+        }
         // commit 而不是 apply：进程可能在下一刻就被结束，“进行中”必须已经落盘，才能在下次打开时认出中断。
         editor.putBoolean(KEY_WIRELESS, wireless)
             .putInt(KEY_PID, pid)
@@ -97,6 +123,9 @@ internal object ConnectionAttemptRecord {
     fun progressed(context: Context, stage: String) {
         val prefs = prefs(context)
         if (!prefs.contains(KEY_PID)) return
+        // After the session went active the step that matters is "waiting for the picture"; later status
+        // lines (control loop running, handoff) must not overwrite it.
+        if (prefs.contains(KEY_SESSION_ACTIVE_AT)) return
         val safe = sanitize(stage) ?: return
         prefs.edit().putString(KEY_STAGE, safe).apply()
     }
@@ -119,9 +148,25 @@ internal object ConnectionAttemptRecord {
         editor.commit()
     }
 
-    /** 会话真正建立：没有失败可报，整条记录删除。 */
+    /**
+     * 会话建立：之前的失败已经不重要（这次尝试走通了握手），但还没有画面，所以不删记录，
+     * 改记“已建立会话、等待画面”。commit：没出画面就退出的进程也要留下这一步。
+     */
     @Synchronized
-    fun sessionActive(context: Context) {
+    fun sessionActive(context: Context, nowMillis: Long = System.currentTimeMillis()) {
+        val prefs = prefs(context)
+        if (!prefs.contains(KEY_PID)) return
+        prefs.edit()
+            .remove(KEY_REASON)
+            .remove(KEY_FAILED_AT)
+            .putString(KEY_STAGE, WAITING_FOR_FIRST_FRAME)
+            .putLong(KEY_SESSION_ACTIVE_AT, nowMillis)
+            .commit()
+    }
+
+    /** 第一帧渲染出来：这次尝试完全成功，整条记录删除。 */
+    @Synchronized
+    fun firstFrame(context: Context) {
         prefs(context).edit().clear().apply()
     }
 
@@ -145,6 +190,7 @@ internal object ConnectionAttemptRecord {
             stage = prefs.getString(KEY_STAGE, null),
             reason = prefs.getString(KEY_REASON, null),
             failedAtMillis = prefs.getLong(KEY_FAILED_AT, 0L),
+            sessionActiveAtMillis = prefs.getLong(KEY_SESSION_ACTIVE_AT, 0L),
         )
     }
 
@@ -152,15 +198,20 @@ internal object ConnectionAttemptRecord {
         resolve(load(context), currentPid)
 
     /**
-     * 有失败原因就报失败；没有失败原因、仍是“进行中”、而写记录的进程已经不是当前进程，报中断；
-     * 其它情况（正在本进程里连接、用户自己断开、从没连过）都不报。
+     * 有失败原因就报失败；会话建立过、没有失败、已经结束（正常收尾或进程换了），报没有画面；
+     * 没有失败原因、仍是“进行中”、而写记录的进程已经不是当前进程，报中断；
+     * 其它情况（正在本进程里连接或等画面、用户在握手前自己断开、从没连过）都不报。
      */
     fun resolve(attempt: ConnectionAttempt?, currentPid: Int): ConnectionAttemptOutcome? {
         if (attempt == null) return null
         attempt.reason?.let { reason ->
             return ConnectionAttemptOutcome.Failed(attempt.wireless, attempt.stage, reason, attempt.failedAtMillis)
         }
-        if (!attempt.ended && attempt.pid != currentPid) {
+        val processGone = attempt.pid != currentPid
+        if (attempt.sessionActiveAtMillis > 0 && (attempt.ended || processGone)) {
+            return ConnectionAttemptOutcome.NoVideo(attempt.wireless, attempt.stage, attempt.sessionActiveAtMillis)
+        }
+        if (!attempt.ended && processGone) {
             return ConnectionAttemptOutcome.Interrupted(attempt.wireless, attempt.stage, attempt.startedAtMillis)
         }
         return null
@@ -170,6 +221,7 @@ internal object ConnectionAttemptRecord {
     fun title(outcome: ConnectionAttemptOutcome): String = when (outcome) {
         is ConnectionAttemptOutcome.Failed -> "上次连接失败"
         is ConnectionAttemptOutcome.Interrupted -> "上次连接被中断"
+        is ConnectionAttemptOutcome.NoVideo -> "上次连接没有画面"
     }
 
     /** 操作卡片的说明：方式 · 时间 · 停在哪一步 · 原因。 */
@@ -179,6 +231,7 @@ internal object ConnectionAttemptRecord {
         return when (outcome) {
             is ConnectionAttemptOutcome.Failed -> "$head$stage\n${shorten(outcome.reason)}"
             is ConnectionAttemptOutcome.Interrupted -> "$head$stage\n连接途中应用被结束，没有留下失败原因。"
+            is ConnectionAttemptOutcome.NoVideo -> "$head\n会话已建立，但到会话结束都没有收到 iPhone 的画面。"
         }
     }
 
@@ -188,13 +241,19 @@ internal object ConnectionAttemptRecord {
         val outcome = when (resolve(attempt, currentPid)) {
             is ConnectionAttemptOutcome.Failed -> "failed"
             is ConnectionAttemptOutcome.Interrupted -> "interrupted (previous process ended mid-connect)"
-            null -> if (attempt.ended) "ended without a failure" else "in progress in this process"
+            is ConnectionAttemptOutcome.NoVideo -> "no video (session went active, no first frame before it ended)"
+            null -> when {
+                attempt.sessionActiveAtMillis > 0 -> "session active, waiting for the first frame in this process"
+                attempt.ended -> "ended without a failure"
+                else -> "in progress in this process"
+            }
         }
         return buildString {
             append("outcome=").append(outcome)
             append(" transport=").append(if (attempt.wireless) "wireless" else "USB")
             append(" started=").append(stampText(attempt.startedAtMillis))
             if (attempt.failedAtMillis > 0) append(" failedAt=").append(stampText(attempt.failedAtMillis))
+            if (attempt.sessionActiveAtMillis > 0) append(" sessionActiveAt=").append(stampText(attempt.sessionActiveAtMillis))
             append(" sameProcess=").append(attempt.pid == currentPid)
             attempt.stage?.let { append("\nstage=").append(it) }
             attempt.reason?.let { append("\nreason=").append(it) }

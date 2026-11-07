@@ -145,6 +145,16 @@ class CarPlayHostActivity : ComponentActivity() {
 
     /** Last non-failure step of this attempt, so a failure can say where it stopped. */
     private var lastAttemptStage: String? = null
+
+    /**
+     * First-frame watchdog (README gap 4), events only (AGENTS.md section 2): the session that went active
+     * and has not rendered a frame yet. The overlay below covers the black picture while it is set.
+     */
+    private var awaitingFirstFrameSession: AirPlaySession? = null
+    private var firstFrameWaitView: View? = null
+
+    /** The overlay's disconnect: run once this screen is in the background, like the home page's own. */
+    private var disconnectWhenStopped = false
     private var startupFailureGeneration = -1
     private lateinit var airPlayIdentity: AirPlayIdentity
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
@@ -1040,6 +1050,12 @@ class CarPlayHostActivity : ComponentActivity() {
         mainHandler.removeCallbacks(pollConfiguration)
         mainHandler.removeCallbacks(reportVideoFps)
         super.onStop()
+        if (disconnectWhenStopped) {
+            disconnectWhenStopped = false
+            // Now in the background: the store callback sees !isActivityStarted and leaves the process alive
+            // for the home page, exactly as a disconnect asked for from that page.
+            CarPlayBackgroundSession.stop()
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1127,6 +1143,90 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         container.addView(mirror, ViewGroup.LayoutParams(-1, -1))
         launchMirror = mirror
+    }
+
+    /**
+     * Session active, no frame yet: say so over the black picture instead of leaving it black. No timer - the
+     * overlay goes away on the first rendered frame, the end of the session, a restart or shutdown, and the
+     * driver decides whether to wait, go home or disconnect.
+     */
+    private fun beginAwaitingFirstFrame(session: AirPlaySession) {
+        if (awaitingFirstFrameSession === session) return
+        awaitingFirstFrameSession = session
+        CarPlayProgress.setAwaitingFirstFrame(true)
+        appendLog("STEP video/await-first-frame: session active, waiting for the first rendered frame")
+        showFirstFrameWait()
+    }
+
+    private fun firstFrameRendered(session: AirPlaySession) {
+        if (awaitingFirstFrameSession !== session) return
+        awaitingFirstFrameSession = null
+        CarPlayProgress.setAwaitingFirstFrame(false)
+        ConnectionAttemptRecord.firstFrame(this)
+        hideFirstFrameWait()
+        appendLog("STEP video/first-frame: first frame rendered; attempt complete")
+    }
+
+    private fun endAwaitingFirstFrame() {
+        if (awaitingFirstFrameSession != null) {
+            appendLog("STEP video/no-first-frame: the session ended before any frame was rendered")
+        }
+        awaitingFirstFrameSession = null
+        CarPlayProgress.setAwaitingFirstFrame(false)
+        hideFirstFrameWait()
+    }
+
+    private fun showFirstFrameWait() {
+        if (firstFrameWaitView != null) return
+        val container = findViewById<ViewGroup>(android.R.id.content) ?: return
+        // Not clickable itself: touches outside the two buttons still reach the gesture layer underneath, so
+        // the hidden-menu swipe and CarPlay input keep working while the overlay is up.
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(32), dp(24), dp(32), dp(24))
+        }
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.waiting_first_frame_title)
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            gravity = Gravity.CENTER
+        })
+        panel.addView(TextView(this).apply {
+            text = getString(R.string.waiting_first_frame_hint)
+            setTextColor(Color.rgb(0xB0, 0xB0, 0xB0))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, dp(18))
+        })
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        buttons.addView(Button(this).apply {
+            text = getString(R.string.waiting_first_frame_home)
+            isAllCaps = false
+            setOnClickListener { showDiPlayHome(noAnimation = true) }
+        })
+        buttons.addView(View(this), LinearLayout.LayoutParams(dp(16), 1))
+        buttons.addView(Button(this).apply {
+            text = getString(R.string.waiting_first_frame_disconnect)
+            isAllCaps = false
+            setOnClickListener {
+                appendLog("STEP video/no-first-frame: driver disconnected while waiting for the first frame")
+                disconnectWhenStopped = true
+                showDiPlayHome(noAnimation = true)
+            }
+        })
+        panel.addView(buttons)
+        container.addView(panel, FrameLayout.LayoutParams(-1, -1))
+        firstFrameWaitView = panel
+    }
+
+    private fun hideFirstFrameWait() {
+        val view = firstFrameWaitView ?: return
+        firstFrameWaitView = null
+        (view.parent as? ViewGroup)?.removeView(view)
     }
 
     private fun clearLaunchSnapshot() {
@@ -1979,8 +2079,9 @@ class CarPlayHostActivity : ComponentActivity() {
                     logThemeState(ThemeModeDiagnostics.Source.SESSION_ACTIVE, resources.configuration)
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
                     CarPlayProgress.clear()
-                    // The attempt succeeded: there is no failure left to show on the home page.
+                    // The handshake succeeded; the attempt is complete only once a frame is on screen.
                     ConnectionAttemptRecord.sessionActive(this@CarPlayHostActivity)
+                    beginAwaitingFirstFrame(session)
                     // The bring-up is over: if the user started it from the home page, bring the video
                     // forward the way the connecting screen used to when it swapped to the session.
                     if (startBehind) {
@@ -2053,6 +2154,7 @@ class CarPlayHostActivity : ComponentActivity() {
             override fun onVideoFrameRendered(session: AirPlaySession) {
                 runOnUiThread {
                     if (controllerGeneration != restartGeneration || activeAirPlaySession !== session || shuttingDown.get()) return@runOnUiThread
+                    firstFrameRendered(session)
                     if (!startupRetryBudget.firstFrame(session, android.os.SystemClock.elapsedRealtime())) return@runOnUiThread
                     mainHandler.postDelayed({
                         if (controllerGeneration == restartGeneration && activeAirPlaySession === session &&
@@ -2073,6 +2175,8 @@ class CarPlayHostActivity : ComponentActivity() {
                         return@runOnUiThread
                     }
                     if (controllerGeneration != restartGeneration || startupRetryStopped) return@runOnUiThread
+                    // The session is gone: the wait for its first frame ends with it (the record keeps it).
+                    endAwaitingFirstFrame()
                     startupRetryBudget.disconnected()
                     activeAirPlaySession = null
                     refreshVideoFps()
@@ -2632,6 +2736,7 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
         val size = activeDisplaySize ?: return
+        endAwaitingFirstFrame()
         startupRetryBudget.disconnected()
         startupRetryButton?.visibility = View.GONE
         appendLog(reason)
@@ -2736,6 +2841,7 @@ class CarPlayHostActivity : ComponentActivity() {
         // No session is being brought up any more, and the home page must stop spinning for it.
         CarPlayProgress.clear()
         CarPlayProgress.clearTransport()
+        endAwaitingFirstFrame()
         // A clean end (disconnect, exit) is not an interruption; a recorded failure stays visible.
         ConnectionAttemptRecord.ended(this)
         clearLaunchSnapshot()

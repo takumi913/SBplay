@@ -970,6 +970,8 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     private fun headline(): String = when {
+        // First-frame watchdog: the handshake is done but no picture has been rendered yet.
+        sessionActive() && CarPlayProgress.awaitingFirstFrame -> "等待画面"
         sessionActive() -> "已连接"
         CarPlayBackgroundSession.hasSession() -> "连接中"
         isWirelessMode() -> "待连接"
@@ -1021,6 +1023,7 @@ class DiPlayActivity : ComponentActivity() {
     private fun pillText(): String = if (isWirelessMode()) "无线 · 5 GHz" else "USB · 未插入"
 
     private fun headerStatusTextValue(): String = when {
+        sessionActive() && CarPlayProgress.awaitingFirstFrame -> "等待画面"
         sessionActive() -> "已连接"
         CarPlayBackgroundSession.hasSession() -> "连接中"
         else -> "未连接"
@@ -2790,9 +2793,10 @@ class DiPlayActivity : ComponentActivity() {
             CarPlayBackgroundSession.hasSession() -> 1
             else -> 0
         }
-        val text = when (state) {
-            2 -> "已连接"
-            1 -> "连接中"
+        val text = when {
+            state == 2 && CarPlayProgress.awaitingFirstFrame -> "等待画面"
+            state == 2 -> "已连接"
+            state == 1 -> "连接中"
             else -> "未连接"
         }
         if (headerStatusText?.text?.toString() != text) {
@@ -2804,7 +2808,11 @@ class DiPlayActivity : ComponentActivity() {
         // so the home page is a live progress view instead of opening the host's own checklist.
         val connecting = state == 1
         gauge.setSpinning(connecting)
-        val stage = if (connecting) CarPlayProgress.stage ?: "正在连接…" else null
+        val stage = when {
+            connecting -> CarPlayProgress.stage ?: "正在连接…"
+            state == 2 && CarPlayProgress.awaitingFirstFrame -> ConnectionAttemptRecord.WAITING_FOR_FIRST_FRAME
+            else -> null
+        }
         // Compare the line actually drawn, not only the live stage: a failure recorded after the session
         // ended changes the idle line without moving the state.
         val line = stage ?: subline()

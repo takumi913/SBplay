@@ -42,6 +42,19 @@ internal object CarPlayProgress {
     fun clearTransport() {
         sessionWireless = null
     }
+
+    /**
+     * True between the session going active and its first rendered frame (first-frame watchdog, README gap 4).
+     * Set and cleared only on events by the host; the home page uses it to say "waiting for the picture"
+     * instead of "connected". Display only.
+     */
+    @Volatile
+    var awaitingFirstFrame: Boolean = false
+        private set
+
+    fun setAwaitingFirstFrame(waiting: Boolean) {
+        awaitingFirstFrame = waiting
+    }
 }
 
 /**
