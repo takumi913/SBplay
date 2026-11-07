@@ -24,7 +24,7 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], qualifiers = "en", shadows = [FileProviderPathTestShadow::class])
 class DiagnosticExportUiTest {
-    @Test fun missingPickerSavesAReportAndProvidesSelectableTextInsideDiPlay() {
+    @Test fun missingPickerSavesAReportAndShowsTextWithoutBrokenSelectionPopup() {
         val controller = Robolectric.buildActivity(DiPlayActivity::class.java).setup()
         val activity = controller.get()
         val context = activity.applicationContext
@@ -56,8 +56,13 @@ class DiagnosticExportUiTest {
             saved.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
             shadowOf(Looper.getMainLooper()).idle()
             val viewer = ShadowAlertDialog.getLatestAlertDialog()
-            assertTrue(descendants(viewer.window!!.decorView).filterIsInstance<TextView>()
-                .any { it.isTextSelectable && it.text.contains("Android 9 / API 19") })
+            // CS11 Android 4.4.3 crashes when long-press selection inflates the ROM's
+            // broken ActionPopupWindow. Diagnostic text must remain readable but
+            // must not enable the platform text-selection popup.
+            val reportViews = descendants(viewer.window!!.decorView).filterIsInstance<TextView>()
+                .filter { it.text.contains("Android 9 / API 19") }.toList()
+            assertTrue(reportViews.isNotEmpty())
+            assertTrue(reportViews.none { it.isTextSelectable })
             viewer.dismiss()
         } finally {
             controller.pause().stop().destroy()
