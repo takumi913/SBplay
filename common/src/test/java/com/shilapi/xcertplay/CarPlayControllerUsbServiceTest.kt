@@ -55,17 +55,20 @@ class CarPlayControllerUsbServiceTest {
         assertEquals(0, context.receivers.size)
     }
 
-    @Test fun availableWiredUsbStillRegistersAndClosesBothIphoneReceivers() {
+    // Permission, attach and (README gap "USB 拔出广播") detach: all three are registered for wired and all three
+    // are released on close, so a closed controller never reacts to a later plug or unplug.
+    @Test fun availableWiredUsbRegistersAndClosesAllThreeIphoneReceivers() {
         val context = UsbContext(true)
         val controller = controller(context, CarPlayTransport.WIRED, MfiTarget.LOCAL)
         controller.start()
-        assertEquals(2, context.receivers.size)
+        assertEquals(3, context.receivers.size)
         assertTrue(context.receivers.values.any { it.hasAction("${context.packageName}.IPHONE_USB_PERMISSION") })
         assertTrue(context.receivers.values.any { it.hasAction("android.hardware.usb.action.USB_DEVICE_ATTACHED") })
+        assertTrue(context.receivers.values.any { it.hasAction("android.hardware.usb.action.USB_DEVICE_DETACHED") })
         controller.close()
         assertTrue(controller.awaitClosed(2_000))
         assertEquals(0, context.receivers.size)
-        assertEquals(2, context.unregistered)
+        assertEquals(3, context.unregistered)
     }
 
     private fun missingServiceFailsNormally(transport: CarPlayTransport, target: MfiTarget) {
