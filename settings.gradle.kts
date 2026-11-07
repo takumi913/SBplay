@@ -27,7 +27,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "xcertplay-cs11"
+rootProject.name = "SBplay"
 include(":common")
 include(":mobile")
 include(":shared")

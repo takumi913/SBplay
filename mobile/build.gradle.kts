@@ -20,8 +20,8 @@ android {
         applicationId = "com.shihab.diplay"
         minSdk = 19
         targetSdk = 19
-        versionCode = 40
-        versionName = "0.2.21-cs11.1"
+        versionCode = 41
+        versionName = "0.2.23"
         multiDexEnabled = true
         // CS11 only: the head unit is 32-bit armv7 and the bundled libopus ships armeabi-v7a.
         ndk { abiFilters += "armeabi-v7a" }
@@ -44,7 +44,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".hudtest"
-            versionNameSuffix = "-hud-test"
+            // Preserve .hudtest application ID for upgrades; the visible version is the release version.
         }
         release {
             optimization {
