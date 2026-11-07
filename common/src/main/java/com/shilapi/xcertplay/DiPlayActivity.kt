@@ -2730,7 +2730,7 @@ class DiPlayActivity : ComponentActivity() {
             when (val credentials = ManualHotspotCredentials.resolve(this)) {
                 is ManualHotspotCredentials.Result.Ready -> Unit
                 is ManualHotspotCredentials.Result.Unavailable -> {
-                    if (credentials.issue == ManualHotspotCredentials.Issue.MISSING_SAVED) {
+                    if (credentials.issue != ManualHotspotCredentials.Issue.FIRMWARE_UNSUPPORTED) {
                         // The firmware could not supply a usable pair: allow manual fallback.
                         askHotspotCredentials { ssid, password ->
                             saveHotspotCredentials(ssid, password)
