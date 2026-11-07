@@ -1,13 +1,18 @@
 name: Build CS11 APK
 
-# Builds the only deliverable of this branch: an APK for the Lynk & Co CS11 head unit
+# SBplay: builds the only deliverable of this repo - an APK for the Lynk & Co CS11 head unit
 # (cs11_19a_h, Android 4.4.3 / API 19, 32-bit ARM). minSdk = targetSdk = 19, armeabi-v7a only.
+#
+# - push / pull_request / manual run: build + verify + tests + lint; the APK is a workflow artifact.
+# - release published: the same build, then the APK (and its SHA-256) is attached to that release,
+#   and an empty release description is filled with install info + auto-generated "What's Changed".
 on:
   push:
-    branches: [main, 'cs11-api19', 'claude/**']
-    tags: ['v*']
+    branches: [main, 'claude/**']
   pull_request:
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -72,13 +77,14 @@ jobs:
           unzip -l "$APK" | grep -q "assets/offline-mfi/identity.pk8"
           unzip -l "$APK" | grep -q "assets/offline-mfi/certificate.p7b"
           ls -l "$APK"
-          cp "$APK" "CS11-LKplay-${GITHUB_SHA::7}.apk"
+          NAME="SBplay-${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}.apk"
+          cp "$APK" "$NAME"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: LKplay-CS11-API19-apk
-          path: CS11-LKplay-*.apk
+          name: SBplay-CS11-API19-apk
+          path: SBplay-*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -101,3 +107,61 @@ jobs:
             common/build/reports/lint-results-debug.html
             mobile/build/reports/lint-results-debug.html
           if-no-files-found: ignore
+
+  # Only for published releases, and only after the build, verification, tests and lint above all passed.
+  release:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # attach assets / edit the release description
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SBplay-CS11-API19-apk
+          path: dist
+
+      - name: Name the asset after the release tag
+        run: |
+          set -euo pipefail
+          SRC=$(ls dist/*.apk)
+          # e.g. SBplay-v0.2.22-cs11.1.apk ; slashes are not valid in asset names
+          ASSET="SBplay-${TAG//\//-}.apk"
+          mv "$SRC" "dist/$ASSET"
+          (cd dist && sha256sum "$ASSET" | tee "$ASSET.sha256")
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Upload APK and checksum to the release
+        run: gh release upload "$TAG" "dist/$ASSET" "dist/$ASSET.sha256" --clobber --repo "$GITHUB_REPOSITORY"
+
+      # Never overwrite notes a human wrote: only an empty description is filled in.
+      - name: Fill in release notes when the description is empty
+        run: |
+          set -euo pipefail
+          BODY=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if [ -n "$(echo "$BODY" | tr -d '[:space:]')" ]; then
+            echo "Release already has a description - leaving it as is."
+            exit 0
+          fi
+          # "What's Changed" grouped by .github/release.yml, like most open-source projects
+          # (PR list, new contributors, full-changelog compare link).
+          GENERATED=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+          SUM=$(cut -d' ' -f1 "dist/$ASSET.sha256")
+          {
+            echo "## 安装 / Install"
+            echo
+            echo "- **目标设备 / Target**：领克 CS11 车机（\`cs11_19a_h\`，Android 4.4.3 / API 19，32 位 ARM）。只面向该车机，不保证其它设备可安装或可用。"
+            echo "- 下载 / Download：\`$ASSET\`"
+            echo "- 安装 / Install：\`adb install -r $ASSET\`（覆盖安装即可，**不要先卸载**，以保留已有设置）。"
+            echo "- SHA-256：\`$SUM\`"
+            echo "- 包名 / Package：\`com.shihab.diplay.hudtest\`（debug 签名；更换签名后无法覆盖安装旧版）。"
+            echo
+            echo "> ⚠️ CI 只证明可编译、APK 格式正确（minSdk 19 / targetSdk 19 / armeabi-v7a / v1 签名）、单测与 lint 通过，**不证明车上可用**。功能须在 CS11 实机验证。"
+            echo
+            echo "$GENERATED"
+          } > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

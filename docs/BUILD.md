@@ -21,9 +21,14 @@
 > - **CI**: `.github/workflows/android.yml` ("Build CS11 APK") builds the same
 >   `:mobile:assembleStandaloneDebug` on JDK 21 + NDK 25.2.9519653 + cmake 3.22.1, checks with
 >   `aapt2`/`apksigner` that the APK is `sdkVersion 19` / `targetSdkVersion 19` / `armeabi-v7a` only /
->   v1-signed / carries the identity, then uploads it as the `LKplay-CS11-API19-apk` artifact
+>   v1-signed / carries the identity, then uploads it as the `SBplay-CS11-API19-apk` artifact
 >   (Actions run page → Artifacts). Unit tests and lint run after the upload as gates.
 >   CI proves it compiles and is installable; it does **not** prove it works — 必须上机复验.
+> - **Releases**: publish a GitHub Release (tag e.g. `v0.2.22-cs11.1`) and the same workflow attaches
+>   `SBplay-<tag>.apk` + `.sha256` to it. An empty description is filled with install info plus
+>   GitHub's auto-generated "What's Changed" (grouped by labels via `.github/release.yml`); a
+>   description you wrote yourself is never overwritten. Tip: use *Generate release notes* in the UI
+>   to preview, and label PRs (`feature`, `bug`, `api19`, `ci`, `docs`, …) so they land in the right group.
 
 Requirements: JDK 25, Android SDK 37, NDK 28.2.13676358 and the included Gradle wrapper.
 
