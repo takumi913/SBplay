@@ -120,6 +120,33 @@ jobs:
             mobile/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
+  # Set the Release title immediately, independently of APK build success.
+  # GitHub may initially populate it from the latest commit message.
+  release_title:
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Set Release title to version and a random daily quote
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Follow fullstack-template: a Hitokoto quote; use a stable fallback if API/JSON fails.
+          default_quote="Stay hungry, stay foolish."
+          quote=$(curl -fsSL --connect-timeout 3 --max-time 5 https://v1.hitokoto.cn/ 2>/dev/null \
+            | jq -r '.hitokoto // empty' 2>/dev/null || true)
+          # Sanitize external text: one short line, never interpreted as shell code.
+          quote=$(printf '%s' "$quote" | tr -d '\r\n' | cut -c1-80)
+          quote=${quote:-$default_quote}
+          title="${TAG} -- \"${quote}\""
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$title"
+          printf 'Release title: %s\n' "$title"
+
   # Only for published releases, and only after the build, verification, tests and lint above all passed.
   release:
     if: github.event_name == 'release'
