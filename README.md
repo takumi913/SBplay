@@ -10,18 +10,15 @@
   </p>
 </div>
 
-在领克 CS11 车机上使用 CarPlay：支持有线和无线连接，导航和音乐信息可以显示在仪表上。
-
-基于 [DiPlay](https://github.com/shihabal3amri/DiPlay) 修改，只适配 CS11，其他车机不保证可用。
+领克 CS11 车机的 CarPlay 接收端，基于 [DiPlay](https://github.com/shihabal3amri/DiPlay)，只适配 CS11。
 
 > 非 Apple 认证产品。CarPlay 是 Apple Inc. 的商标；本项目与 Apple、领克、吉利、亿咖通均无关联。
 
 ## 功能
 
 - 无线 CarPlay
-- 有线 CarPlay（USB）
-- 仪表显示导航和正在播放的音乐
-- 连接失败时可以查看「失败详情」，方便拍照反馈
+- 有线 CarPlay
+- 仪表显示导航和音乐
 
 ## 状态
 
@@ -31,15 +28,14 @@
 | 有线 CarPlay | 可用 |
 | 仪表导航、媒体卡片 | 可用 |
 | 仪表专辑封面 | 未完成 |
-| 稳定性与失败排查改进 | 待实车验证 |
 
 ## 下载
 
-到 [Releases](https://github.com/takumi913/SBplay/releases) 下载最新的 APK。安装、构建和开发说明见 [`docs/GUIDE.md`](docs/GUIDE.md)。
+[Releases](https://github.com/takumi913/SBplay/releases)。使用和开发说明见 [`docs/GUIDE.md`](docs/GUIDE.md)。
 
 ## 反馈
 
-到 [Issues](https://github.com/takumi913/SBplay/issues) 提交问题，写明 iPhone 型号、iOS 版本和连接方式。连接失败时，请附上「失败详情」每一页的照片。请不要贴出热点密码。
+[Issues](https://github.com/takumi913/SBplay/issues)。
 
 ## 许可
 

@@ -107,6 +107,12 @@ tools/    开发脚本（装机、取证、归档原生符号）
 - [`docs/UPSTREAM-README.md`](UPSTREAM-README.md)：上游 README 原文；`docs/INSTALL.md` 和 `docs/COMPATIBILITY.md` 描述的是比亚迪目标，不适用于本分支。
 - [`docs/THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)、`docs/licenses/`：致谢与许可证。
 
+## 反馈
+
+到 [Issues](https://github.com/takumi913/SBplay/issues) 提交，写明 iPhone 型号、iOS 版本和连接方式（有线或无线）。
+连接失败时，请拍下「失败详情」的每一页：首页点「查看失败详情」，或 设置 → 诊断 →「查看最近错误」。
+请不要贴出热点密码。
+
 ## 致谢
 
 GPL-3.0（见 [LICENSE](../LICENSE)）。基于 shihabal3amri 的 [DiPlay](https://github.com/shihabal3amri/DiPlay)，它又基于 [xcertplay](https://github.com/shilapi/xcertplay)；主页与设置界面改编自 [DiAuto](https://github.com/shihabal3amri/DiAuto)（AGPL-3.0，许可证文本见 `docs/licenses/`）。内置 Opus 编解码器（`shared/src/main/jniLibs/armeabi-v7a/libdiplay_opus.so`）为 Opus / libopus（BSD，见 `docs/Opus-LICENSE.txt`）。
