@@ -35,11 +35,12 @@ internal object FailureDetail {
         outcome: ConnectionAttemptOutcome?,
         appVersion: String,
         device: String,
+        hasCrash: Boolean = false,
         clock: (Long) -> String = ::clockText,
     ): List<String> {
         val lines = mutableListOf("SBplay $appVersion · $device")
         if (outcome == null) {
-            lines += "【没有记录到失败】下面是最近一次连接的完整日志。"
+            lines += if (hasCrash) "【检测到未捕获的 Java/Kotlin 异常】堆栈见下方。" else "【没有记录到失败】下面是最近一次连接的完整日志。"
             return lines
         }
         lines += "【${ConnectionAttemptRecord.title(outcome)}】"
@@ -47,7 +48,7 @@ internal object FailureDetail {
         outcome.stage?.let { lines += "停在：$it" }
         lines += when (outcome) {
             is ConnectionAttemptOutcome.Failed -> "原因：${outcome.reason}"
-            is ConnectionAttemptOutcome.Interrupted -> "原因：连接途中应用被结束，没有留下失败原因。"
+            is ConnectionAttemptOutcome.Interrupted -> "原因：连接途中进程结束；下方显示最后检查点和可获取的异常堆栈。" 
             is ConnectionAttemptOutcome.NoVideo -> "原因：会话已建立，但到会话结束都没有收到 iPhone 的画面。"
         }
         return lines
@@ -97,9 +98,13 @@ internal object FailureDetail {
     /** 摘要 + 分隔行 + 最近一次连接的完整日志；读取发生在后台线程。 */
     fun collect(context: Context, appVersion: String): List<String> {
         val details = retainedAttemptLines(context).mapNotNull(DiagnosticRedactor::redact)
+        val attempt = runCatching { ConnectionAttemptRecord.load(context) }.getOrNull()
         val outcome = runCatching { ConnectionAttemptRecord.outcome(context) }.getOrNull()
         val device = "Android ${Build.VERSION.RELEASE ?: "?"} · ${Build.MODEL ?: "?"}"
-        return summary(outcome, appVersion, device) +
+        val hasCrash = CrashDiagnostics.hasCrash(context)
+        val crashDetails = CrashDiagnostics.displayLines(context, attempt, outcome)
+        return summary(outcome, appVersion, device, hasCrash = hasCrash) +
+            crashDetails +
             "—— 最近一次连接的完整日志（${details.size} 行，仅限已保留的日志文件）——" +
             details.ifEmpty { listOf("（没有找到日志：可能还没有连接过，或日志已被清除）") }
     }

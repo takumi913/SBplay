@@ -1030,11 +1030,13 @@ class DiPlayActivity : ComponentActivity() {
         val hint = actionHint ?: return
         val wireless = isWirelessMode()
         val outcome = lastAttemptOutcome()
-        val titleText = actionTitleText(wireless, outcome)
-        val hintText = actionHintText(wireless, outcome)
+        val titleText = if (outcome == null && CrashDiagnostics.hasCrash(this)) "检测到上次应用异常"
+            else actionTitleText(wireless, outcome)
+        val hintText = if (outcome == null && CrashDiagnostics.hasCrash(this)) "点开失败详情可查看 Java 异常与堆栈。"
+            else actionHintText(wireless, outcome)
         if (title.text?.toString() != titleText) title.text = titleText
         if (hint.text?.toString() != hintText) hint.text = hintText
-        val detailsVisibility = if (outcome != null) View.VISIBLE else View.GONE
+        val detailsVisibility = if (outcome != null || CrashDiagnostics.hasCrash(this)) View.VISIBLE else View.GONE
         failureDetailButton?.let { if (it.visibility != detailsVisibility) it.visibility = detailsVisibility }
     }
 
@@ -2998,6 +3000,12 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine(StartupDiagnosticSnapshot.report(appContext))
                     appendLine("Startup settings: openAfterBoot=${AirPlayPersistence.loadAutoStartOnBoot(appContext)} " +
                         "connectWhenOpened=${DiPlayPreferences.autoConnect(appContext)}")
+                    appendLine()
+                    appendLine("--- SBplay saved Java crash / startup checkpoint (API 19) ---")
+                    appendLine(CrashDiagnostics.displayLines(
+                        appContext, ConnectionAttemptRecord.load(appContext),
+                        ConnectionAttemptRecord.outcome(appContext),
+                    ).joinToString("\n"))
                     appendLine()
                     appendLine("--- Recent own-app process exits (Android 11+) ---")
                     appendLine(ProcessExitDiagnostics.report(appContext))

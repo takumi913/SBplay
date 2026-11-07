@@ -2382,13 +2382,16 @@ class CarPlayHostActivity : ComponentActivity() {
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress || controller != null) return
         // Failure visibility (README gap): open or continue the on-disk record of this attempt before the
         // bring-up, so the home page can still say what happened after this screen and its process are gone.
+        CrashDiagnostics.beginAttempt(this, "startCarPlay enter transport=${if (wirelessEnabled) "wireless" else "wired"}")
         ConnectionAttemptRecord.started(this, wirelessEnabled, keepFailure = attemptRecorded)
         // Mode convergence: the home page's tab follows the transport actually being brought up.
         CarPlayProgress.publishTransport(wirelessEnabled)
         if (!attemptRecorded) lastAttemptStage = null
         attemptRecorded = true
         val controllerGeneration = restartGeneration
+        CrashDiagnostics.checkpoint(this, "before createRuntimeConfig")
         val config = createRuntimeConfig()
+        CrashDiagnostics.checkpoint(this, "after createRuntimeConfig")
         val effectiveSize = if (isMultiWindowActive() &&
             maximumDetectedWidthPixels >= size.width && maximumDetectedHeightPixels >= size.height &&
             (maximumDetectedWidthPixels > size.width || maximumDetectedHeightPixels > size.height)) {
@@ -2396,7 +2399,9 @@ class CarPlayHostActivity : ComponentActivity() {
         } else {
             size
         }
+        CrashDiagnostics.checkpoint(this, "before createAirPlayConfig")
         val airPlayConfig = createAirPlayConfig(effectiveSize)
+        CrashDiagnostics.checkpoint(this, "after createAirPlayConfig")
         val locationProvider: Iap2LocationProvider? =
             if (config.locationReportingEnabled) AndroidCarPlayLocationProvider(this) else null
         appendLog(
@@ -2419,17 +2424,20 @@ class CarPlayHostActivity : ComponentActivity() {
                 "location=${config.locationReportingEnabled} " +
                 "mfi=${config.mfiTarget}",
         )
+        CrashDiagnostics.checkpoint(this, "before createMediaSink")
         val renderer = createMediaSink(
             videoWidth = airPlayConfig.main.widthPixels,
             videoHeight = airPlayConfig.main.heightPixels,
             controllerGeneration = controllerGeneration,
         )
         sink = renderer
+        CrashDiagnostics.checkpoint(this, "after createMediaSink")
         currentSurface?.let(::attachSurface)
         val media = createMediaEngine(renderer)
         val pairings = AirPlayPersistence.loadPairings(this) { id, key ->
             AirPlayPersistence.savePairing(this, id, key)
         }
+        CrashDiagnostics.checkpoint(this, "before CarPlayController constructor")
         val next = CarPlayController(
             context = this,
             config = config,
@@ -2445,6 +2453,7 @@ class CarPlayHostActivity : ComponentActivity() {
             locationProvider = locationProvider,
         )
         controller = next
+        CrashDiagnostics.checkpoint(this, "after CarPlayController constructor")
         CarPlayMediaKeys.attach(this, next)
         if (airPlayConfig.videoInCar) CarPlayVideo.attach(this, next)
         val display = CarPlaySessionDisplay(
@@ -2480,8 +2489,11 @@ class CarPlayHostActivity : ComponentActivity() {
                 // flash between two moments where the home page should be the only thing on screen.
                 overridePendingTransition(0, 0)
             }
+            CrashDiagnostics.checkpoint(this, "before CarPlayController.start")
             next.start()
+            CrashDiagnostics.checkpoint(this, "after CarPlayController.start")
         } catch (error: RuntimeException) {
+            CrashDiagnostics.recordCaught(this, error, "CarPlayController.start")
             appendLog("Connection could not start: ${error.javaClass.simpleName}")
             shutdown(false, "foreground service could not start")
             setConnectionStage(getString(R.string.could_not_start_carplay_return_to_diplay_and_check_app_per))
@@ -2583,6 +2595,7 @@ class CarPlayHostActivity : ComponentActivity() {
         updateResolutionMenu()
         if (previous == null) {
             appendLog("Display detected: ${size.width}x${size.height}")
+            CrashDiagnostics.checkpoint(this, "display-detected ${size.width}x${size.height}")
             maybeStartCarPlay()
         } else if (menuOpen || handshakeResetInProgress) {
             appendLog(
