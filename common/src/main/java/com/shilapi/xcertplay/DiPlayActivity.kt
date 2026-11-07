@@ -69,9 +69,12 @@ class DiPlayActivity : ComponentActivity() {
     private var gaugeView: GaugeView? = null
     private var gaugeTitle: TextView? = null
     private var gaugeSubtitle: TextView? = null
-    /** Last stage line drawn under the gauge, so the once-a-second poll only touches the view when it moves. */
+    /** Last line drawn under the gauge, so the once-a-second poll only touches the view when it moves. */
     private var lastStage: String? = null
     private var gaugePill: TextView? = null
+    /** The action card's title and hint: they carry the last failure once a failed attempt has ended. */
+    private var actionTitle: TextView? = null
+    private var actionHint: TextView? = null
     private var setupError: String? = null
     private var status: TextView? = null
     private var connectButton: Button? = null
@@ -369,6 +372,7 @@ class DiPlayActivity : ComponentActivity() {
         adbStatus = null
         headerStatusText = null; headerStatusDot = null
         gaugeView = null; gaugeTitle = null; gaugeSubtitle = null; gaugePill = null
+        actionTitle = null; actionHint = null
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -686,13 +690,15 @@ class DiPlayActivity : ComponentActivity() {
         // Text on the left, actions on the right: the card is only as tall as one row of content.
         val text = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         text.addView(label(if (wireless) "无线 CarPlay" else "USB CarPlay", 10, MUTED, true))
-        text.addView(label(if (wireless) "等待连接" else "插上线就开始", 20, TEXT, true).apply {
+        val outcome = lastAttemptOutcome()
+        text.addView(label(actionTitleText(wireless, outcome), 20, TEXT, true).apply {
             setPadding(0, dp(5), 0, 0)
+            actionTitle = this
         })
-        text.addView(label(
-            if (wireless) "保持车机热点与蓝牙开启。" else "插到支持数据传输的 USB 接口。",
-            12, MUTED,
-        ).apply { setPadding(0, dp(3), 0, 0) })
+        text.addView(label(actionHintText(wireless, outcome), 12, MUTED).apply {
+            setPadding(0, dp(3), 0, 0)
+            actionHint = this
+        })
         card.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
 
         val buttons = LinearLayout(this).apply {
@@ -958,7 +964,42 @@ class DiPlayActivity : ComponentActivity() {
         if (sessionActive() || CarPlayBackgroundSession.hasSession()) {
             return DiPlayPreferences.phoneName(this) ?: ""
         }
+        // Failure visibility: a failed or interrupted attempt says so instead of the idle wording.
+        lastAttemptOutcome()?.let { return ConnectionAttemptRecord.title(it) }
         return if (isWirelessMode()) "未发现 iPhone" else "未检测到 iPhone"
+    }
+
+    /**
+     * The last attempt's failure or interruption, recorded by the CarPlay host (ConnectionAttemptRecord).
+     * Hidden while a session exists: the live stage line is the truth then. SharedPreferences are cached in
+     * memory after the first read, so the once-a-second tick costs no disk access.
+     */
+    private fun lastAttemptOutcome(): ConnectionAttemptOutcome? =
+        if (CarPlayBackgroundSession.hasSession()) null
+        else runCatching { ConnectionAttemptRecord.outcome(this) }.getOrNull()
+
+    private fun actionTitleText(wireless: Boolean, outcome: ConnectionAttemptOutcome?): String = when {
+        outcome != null -> ConnectionAttemptRecord.title(outcome)
+        wireless -> "等待连接"
+        else -> "插上线就开始"
+    }
+
+    private fun actionHintText(wireless: Boolean, outcome: ConnectionAttemptOutcome?): String = when {
+        outcome != null -> ConnectionAttemptRecord.detail(outcome)
+        wireless -> "保持车机热点与蓝牙开启。"
+        else -> "插到支持数据传输的 USB 接口。"
+    }
+
+    /** Keeps the action card in step with the record when a failed attempt ends while this page is open. */
+    private fun refreshActionCardText() {
+        val title = actionTitle ?: return
+        val hint = actionHint ?: return
+        val wireless = isWirelessMode()
+        val outcome = lastAttemptOutcome()
+        val titleText = actionTitleText(wireless, outcome)
+        val hintText = actionHintText(wireless, outcome)
+        if (title.text?.toString() != titleText) title.text = titleText
+        if (hint.text?.toString() != hintText) hint.text = hintText
     }
 
     private fun pillText(): String = if (isWirelessMode()) "无线 · 5 GHz" else "USB · 未插入"
@@ -2693,6 +2734,7 @@ class DiPlayActivity : ComponentActivity() {
         // screen the owner asked not to see during a connect.
         connectButton?.visibility = if (running && !active) View.GONE else View.VISIBLE
         connectButton?.isEnabled = setupError == null
+        refreshActionCardText()
         refreshHeaderAndGauge()
     }
 
@@ -2721,12 +2763,15 @@ class DiPlayActivity : ComponentActivity() {
         val connecting = state == 1
         gauge.setSpinning(connecting)
         val stage = if (connecting) CarPlayProgress.stage ?: "正在连接…" else null
-        if (state == lastGaugeState && stage == lastStage) return
+        // Compare the line actually drawn, not only the live stage: a failure recorded after the session
+        // ended changes the idle line without moving the state.
+        val line = stage ?: subline()
+        if (state == lastGaugeState && line == lastStage) return
         lastGaugeState = state
-        lastStage = stage
+        lastStage = line
         gauge.filled = gaugeFilled()
         gaugeTitle?.text = headline()
-        gaugeSubtitle?.text = stage ?: subline()
+        gaugeSubtitle?.text = line
         gaugePill?.text = pillText()
     }
 
@@ -2759,6 +2804,9 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("Saved resolution preference (may differ from active session): ${AirPlayPersistence.loadDisplayScalePercent(appContext)}%")
                     appendLine("Session: ${if (CarPlayBackgroundSession.active) "active" else if (CarPlayBackgroundSession.hasSession()) "connecting" else "stopped"}")
                     appendLine("Head-unit board: ${Build.BOARD}; hardware: ${Build.HARDWARE}; build: ${Build.DISPLAY}")
+                    appendLine()
+                    appendLine("--- Last connection attempt (failure / interruption) ---")
+                    appendLine(ConnectionAttemptRecord.report(appContext))
                     appendLine()
                     appendLine("--- Last display negotiation (timestamps distinguish it from current settings) ---")
                     appendLine(DisplayDiagnosticSnapshot.report(appContext))

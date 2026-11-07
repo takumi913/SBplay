@@ -135,6 +135,16 @@ class CarPlayHostActivity : ComponentActivity() {
 
     private var startupRetryStopped = false
     private var startupRetryButton: View? = null
+
+    /**
+     * Whether this host instance has already opened a connection attempt record (ConnectionAttemptRecord).
+     * Automatic retries inside the same instance keep the failure already recorded; only a new instance -
+     * a new connect from the home page, a USB plug-in, the Bluetooth receiver - starts a fresh record.
+     */
+    private var attemptRecorded = false
+
+    /** Last non-failure step of this attempt, so a failure can say where it stopped. */
+    private var lastAttemptStage: String? = null
     private var startupFailureGeneration = -1
     private lateinit var airPlayIdentity: AirPlayIdentity
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
@@ -1967,6 +1977,8 @@ class CarPlayHostActivity : ComponentActivity() {
                     logThemeState(ThemeModeDiagnostics.Source.SESSION_ACTIVE, resources.configuration)
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
                     CarPlayProgress.clear()
+                    // The attempt succeeded: there is no failure left to show on the home page.
+                    ConnectionAttemptRecord.sessionActive(this)
                     // The bring-up is over: if the user started it from the home page, bring the video
                     // forward the way the connecting screen used to when it swapped to the session.
                     if (startBehind) {
@@ -2151,6 +2163,8 @@ class CarPlayHostActivity : ComponentActivity() {
         controllerGeneration: Int,
     ): (CarPlayStatus) -> Unit = report@{ status ->
         if (controllerGeneration != restartGeneration) return@report
+        // Recorded before the menu check: an open menu defers the reaction, not the fact that it failed.
+        recordAttemptStatus(status)
         if (menuOpen) {
             if (status is CarPlayStatus.Failed) failurePendingAfterMenu = status
             return@report
@@ -2179,6 +2193,25 @@ class CarPlayHostActivity : ComponentActivity() {
                 reconnectAfterLoss(description, status.startupFailure)
             }
             else -> Unit
+        }
+    }
+
+    /**
+     * Writes the step or the failure into ConnectionAttemptRecord. Display only: nothing here changes how
+     * the connection proceeds or retries.
+     */
+    private fun recordAttemptStatus(status: CarPlayStatus) {
+        val description = status.describe()
+        if (status is CarPlayStatus.Failed) {
+            val reason = when (status.startupFailure) {
+                WirelessStartupFailure.HOTSPOT_NOT_READY, WirelessStartupFailure.FIRST_TCP_TIMEOUT ->
+                    "$description (${status.message})"
+                else -> status.message
+            }
+            ConnectionAttemptRecord.failed(this, lastAttemptStage, reason)
+        } else {
+            lastAttemptStage = description
+            ConnectionAttemptRecord.progressed(this, description)
         }
     }
 
@@ -2241,6 +2274,11 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun startCarPlay(size: DisplaySize) {
         if (CarPlayBackgroundSession.hasSession() && !CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress || controller != null) return
+        // Failure visibility (README gap): open or continue the on-disk record of this attempt before the
+        // bring-up, so the home page can still say what happened after this screen and its process are gone.
+        ConnectionAttemptRecord.started(this, wirelessEnabled, keepFailure = attemptRecorded)
+        if (!attemptRecorded) lastAttemptStage = null
+        attemptRecorded = true
         val controllerGeneration = restartGeneration
         val config = createRuntimeConfig()
         val effectiveSize = if (isMultiWindowActive() &&
@@ -2693,6 +2731,8 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!shuttingDown.compareAndSet(false, true)) { completion(); return }
         // No session is being brought up any more, and the home page must stop spinning for it.
         CarPlayProgress.clear()
+        // A clean end (disconnect, exit) is not an interruption; a recorded failure stays visible.
+        ConnectionAttemptRecord.ended(this)
         clearLaunchSnapshot()
         // Shutdown restores through DiPlaySessionService's own stop; a grace still pending would fire
         // against a stack that is already gone.
