@@ -812,6 +812,8 @@ class CarPlayHostActivity : ComponentActivity() {
                 AirPlayPersistence.saveWirelessEnabled(this, false)
                 wirelessEnabled = false
                 wirelessPermissionsReady = true
+                // The restart below publishes again at its controller start; this covers the gap before it.
+                if (controller != null) CarPlayProgress.publishTransport(false)
                 if (controller != null) {
                     restartCarPlay("switching to USB")
                 }
@@ -1978,7 +1980,7 @@ class CarPlayHostActivity : ComponentActivity() {
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
                     CarPlayProgress.clear()
                     // The attempt succeeded: there is no failure left to show on the home page.
-                    ConnectionAttemptRecord.sessionActive(this)
+                    ConnectionAttemptRecord.sessionActive(this@CarPlayHostActivity)
                     // The bring-up is over: if the user started it from the home page, bring the video
                     // forward the way the connecting screen used to when it swapped to the session.
                     if (startBehind) {
@@ -2277,6 +2279,8 @@ class CarPlayHostActivity : ComponentActivity() {
         // Failure visibility (README gap): open or continue the on-disk record of this attempt before the
         // bring-up, so the home page can still say what happened after this screen and its process are gone.
         ConnectionAttemptRecord.started(this, wirelessEnabled, keepFailure = attemptRecorded)
+        // Mode convergence: the home page's tab follows the transport actually being brought up.
+        CarPlayProgress.publishTransport(wirelessEnabled)
         if (!attemptRecorded) lastAttemptStage = null
         attemptRecorded = true
         val controllerGeneration = restartGeneration
@@ -2731,6 +2735,7 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!shuttingDown.compareAndSet(false, true)) { completion(); return }
         // No session is being brought up any more, and the home page must stop spinning for it.
         CarPlayProgress.clear()
+        CarPlayProgress.clearTransport()
         // A clean end (disconnect, exit) is not an interruption; a recorded failure stays visible.
         ConnectionAttemptRecord.ended(this)
         clearLaunchSnapshot()

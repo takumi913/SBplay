@@ -24,6 +24,24 @@ internal object CarPlayProgress {
     fun clear() {
         stage = null
     }
+
+    /**
+     * Transport of the session this process is bringing up or running (true = wireless), null when there is
+     * none. Published by the host at every controller start - so the in-session switch to USB updates it - and
+     * cleared only on shutdown, not when the session goes live. The home page uses it to keep its tab on the
+     * running transport (ConnectionModePolicy). Display only, like [stage].
+     */
+    @Volatile
+    var sessionWireless: Boolean? = null
+        private set
+
+    fun publishTransport(wireless: Boolean) {
+        sessionWireless = wireless
+    }
+
+    fun clearTransport() {
+        sessionWireless = null
+    }
 }
 
 /**

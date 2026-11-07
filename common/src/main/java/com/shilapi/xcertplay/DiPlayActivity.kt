@@ -164,9 +164,10 @@ class DiPlayActivity : ComponentActivity() {
             getString(R.string.setup_error_auth)
         }
         page = savedInstanceState?.getString("page") ?: intent.getStringExtra("page") ?: "home"
-        // The page follows the transport that was used last, so coming back from the host (which can
-        // recreate this activity) does not flip a wired session onto the wireless page.
-        connectionMode = if (AirPlayPersistence.loadWirelessEnabled(this)) 0 else 1
+        // The page follows the running session's transport, else the saved mode (ConnectionModePolicy), so
+        // coming back from the host (which can recreate this activity) does not flip a wired session onto
+        // the wireless page.
+        connectionMode = if (convergedWireless()) 0 else 1
         // Back on the home page finishes this activity while the session runs on, so the launcher icon lands
         // here with nothing under it. Going straight to CarPlay from onCreate - and finishing - means the
         // connect screen never flashes on the way. Ported from upstream 10f19a6b; the switch is honoured
@@ -509,9 +510,24 @@ class DiPlayActivity : ComponentActivity() {
                 background = if (active) roundedR(ACCENT_SOFT, 13) else null
                 isClickable = true
                 setOnClickListener {
-                    if (connectionMode != index) {
-                        connectionMode = index
-                        render()
+                    when (ConnectionModePolicy.onTabClick(
+                        currentWireless = connectionMode == 0,
+                        clickedWireless = index == 0,
+                        hasSession = CarPlayBackgroundSession.hasSession(),
+                    )) {
+                        ConnectionModePolicy.TabClick.UNCHANGED -> Unit
+                        // While a session runs the tab stays on its transport and the saved mode is left
+                        // alone: the host re-reads it on every resume, so changing it now would switch the
+                        // next automatic retry to the other transport.
+                        ConnectionModePolicy.TabClick.BLOCKED_BY_SESSION ->
+                            toast("当前是${if (connectionMode == 0) "无线" else "USB"}连接，请先断开再切换。")
+                        ConnectionModePolicy.TabClick.SWITCH_AND_SAVE -> {
+                            // Saved at once, so auto-connect, the Bluetooth receiver, the hotspot autostart
+                            // and the report all follow the tab that is on screen.
+                            AirPlayPersistence.saveWirelessEnabled(this@DiPlayActivity, index == 0)
+                            connectionMode = index
+                            render()
+                        }
                     }
                 }
             }
@@ -2542,6 +2558,13 @@ class DiPlayActivity : ComponentActivity() {
         startupHotspotCancelled = true
         // Whatever page the tap came from, the session's transport decides which page is shown afterwards.
         connectionMode = if (wireless) 0 else 1
+        // Saved up front, not only once the checks below pass: otherwise the once-a-second convergence would
+        // pull the tab back to the old mode while the phone picker or the hotspot dialog is open. Never while
+        // a session runs on the other transport (see ConnectionModePolicy); the open path below saves after
+        // stopping it.
+        if (ConnectionModePolicy.maySaveOnConnect(wireless, CarPlayBackgroundSession.hasSession(), CarPlayProgress.sessionWireless)) {
+            AirPlayPersistence.saveWirelessEnabled(this, wireless)
+        }
         if (setupError != null) { toast(setupError!!); return }
         // CS11/4.4: the hotspot's SSID and passphrase are read out of the firmware's own AP configuration
         // (docs/_digest/84), so there is nothing for the owner to type. What can still block a connection is
@@ -2701,7 +2724,26 @@ class DiPlayActivity : ComponentActivity() {
         }
     }
 
+    /** The transport the home page shows: the running session's, else the saved mode. */
+    private fun convergedWireless(): Boolean = ConnectionModePolicy.displayedWireless(
+        AirPlayPersistence.loadWirelessEnabled(this),
+        if (CarPlayBackgroundSession.hasSession()) CarPlayProgress.sessionWireless else null,
+    )
+
     private fun refreshStatus() {
+        // Mode convergence: a session started elsewhere (USB plug-in, Bluetooth receiver) or switched to USB
+        // inside the host moves the tab here. render() calls back into refreshStatus, which then finds the
+        // tab already converged and carries on.
+        // Only the home page is rebuilt for it; any other page (settings with edits in progress) just takes the
+        // new value and shows it on its next render.
+        val convergedMode = if (convergedWireless()) 0 else 1
+        if (convergedMode != connectionMode) {
+            connectionMode = convergedMode
+            if (page == "home") {
+                render()
+                return
+            }
+        }
         val running = CarPlayBackgroundSession.hasSession()
         val active = CarPlayBackgroundSession.active
         status?.text = when {
@@ -2725,7 +2767,7 @@ class DiPlayActivity : ComponentActivity() {
                 DiPlayPreferences.saveLastConnection(
                     this,
                     DiPlayPreferences.phoneName(this),
-                    AirPlayPersistence.loadWirelessEnabled(this),
+                    CarPlayProgress.sessionWireless ?: AirPlayPersistence.loadWirelessEnabled(this),
                 )
             }
         }
@@ -2796,7 +2838,11 @@ class DiPlayActivity : ComponentActivity() {
                     appendLine("DiPlay ${version()} · private beta diagnostic report")
                     appendLine("Android ${Build.VERSION.RELEASE} / API 19")
                     appendLine("Head unit: ${Build.MANUFACTURER} ${Build.MODEL}")
-                    appendLine("Connection: ${if (AirPlayPersistence.loadWirelessEnabled(appContext)) "wireless" else "USB"}")
+                    // The saved mode and the running session's transport are reported apart: they can only
+                    // differ while a session is being replaced, and the report must not blur the two.
+                    appendLine("Connection (selected mode): ${if (AirPlayPersistence.loadWirelessEnabled(appContext)) "wireless" else "USB"}")
+                    appendLine("Session transport: ${ConnectionModePolicy.sessionTransportLabel(
+                        CarPlayBackgroundSession.hasSession(), CarPlayProgress.sessionWireless)}")
                     appendLine("Authentication: local experimental beta identity; no remote fallback")
                     appendLine("CarPlay setup: ${if (setupError == null) "ready" else "authentication unavailable"}")
                     appendLine("Saved video preference (may differ from active session): H.264; ${AirPlayPersistence.loadFps(appContext)} fps")
