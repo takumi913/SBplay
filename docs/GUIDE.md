@@ -65,7 +65,9 @@ Windows 本地构建（wrapper 指向国内镜像，常用 `--offline`）：
 
 ## 发布
 
-发布前先更新 `mobile/build.gradle.kts` 的 `versionName` 和 `versionCode`，将更新提交到 `main`，再从这个新提交创建 tag（例如 `v0.2.24`）。**Release 使用 tag 所指向的源码，不会自动使用随后推送到 main 的修改。**\n\n在 GitHub 上发布 Release（tag 形如 `v0.2.24`），工作流会自动：
+发布前先更新 `mobile/build.gradle.kts` 的 `versionName` 和 `versionCode`，将更新提交到 `main`，再从这个新提交创建 tag（例如 `v0.2.24`）。**Release 使用 tag 所指向的源码，不会自动使用随后推送到 main 的修改。**
+
+在 GitHub 上发布 Release（tag 形如 `v0.2.24`），工作流会自动：
 
 1. 构建并校验 APK：`minSdk` / `targetSdk` 为 19、仅 `armeabi-v7a`、v1 签名、内置配件身份。
 2. 跑完单测和 lint。
