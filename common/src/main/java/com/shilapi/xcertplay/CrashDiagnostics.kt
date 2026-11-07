@@ -12,14 +12,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * App-private API 19 crash recorder, independent of logcat and SessionLogFile.
+ * Private Java/Kotlin exception recorder for Android 4.4.3 / API 19.
  *
- * A Java/Kotlin uncaught exception is persisted synchronously before the system's original
- * crash handler runs. A force-stop, native abort, kernel kill, or power loss cannot supply a
- * Java stack; synchronous checkpoints can still identify the last completed startup phase.
- * This is diagnostic-only: nothing is uploaded and it does not change the connection state.
+ * The original system crash handler still runs. Each exception gets a distinct,
+ * bounded file and old crashes remain available across subsequent attempts.
+ * A native abort, force-stop, or system kill has no Java stack: use the persisted
+ * connection checkpoint instead. No uploads or connection-behavior changes.
  */
 object CrashDiagnostics {
     private const val PREFS = "sbplay_crash_checkpoints"
@@ -27,10 +28,20 @@ object CrashDiagnostics {
     private const val KEY_TIME = "time"
     private const val KEY_STEP = "step"
     private const val MAX_CRASH_CHARS = 192 * 1024
-    private const val CRASH_FILE = "last-java-crash.txt"
+    private const val MAX_RECENT_CRASHES = 5
+    private const val LEGACY_CRASH_FILE = "last-java-crash.txt"
+    private val FILE_PATTERN = Regex("^crash-([0-9]+)-pid([0-9]+)-([0-9]+)[.]txt$")
+    private val HEADER_PID = Regex("(?:^| )pid=([0-9]+)(?: |$)")
+    private val sequence = AtomicInteger(0)
 
     private val installed = AtomicBoolean(false)
     private val recordingCrash = AtomicBoolean(false)
+
+    internal data class CrashEntry(
+        val file: File,
+        val pid: Int?,
+        val recordedAtMillis: Long,
+    )
 
     @JvmStatic
     fun install(context: Context) {
@@ -44,7 +55,7 @@ object CrashDiagnostics {
                         saveCrash(app, throwable, "uncaught", thread.name)
                     }
                 } catch (_: Throwable) {
-                    // Never turn a crash recorder failure into a second crash.
+                    // An exception in diagnostics must not replace the original failure.
                 } finally {
                     if (previous != null) {
                         previous.uncaughtException(thread, throwable)
@@ -57,13 +68,12 @@ object CrashDiagnostics {
         })
     }
 
-    /** New attempt starts fresh; never display a previous attempt's stack as the current failure. */
+    /** Starting another connection must never delete the previous crash stack. */
     internal fun beginAttempt(context: Context, label: String) {
-        runCatching { crashFile(context).delete() }
         checkpoint(context, label)
     }
 
-    /** Durable checkpoint: survives a kill even when SessionLogFile cannot flush the next line. */
+    /** Durable last step: usable even if a process dies without a Java exception. */
     internal fun checkpoint(context: Context, step: String) {
         try {
             val safe = DiagnosticRedactor.redact(step) ?: "sensitive stage hidden"
@@ -73,25 +83,22 @@ object CrashDiagnostics {
                 .putString(KEY_STEP, safe)
                 .commit()
         } catch (_: Throwable) {
-            // Logging cannot be allowed to break the connection itself.
+            // Never break connection startup just because a checkpoint could not be saved.
         }
     }
 
-    /** Handled startup errors must also retain their stack, not just their simple class name. */
     internal fun recordCaught(context: Context, throwable: Throwable, phase: String) {
         runCatching { saveCrash(context, throwable, "caught: $phase", Thread.currentThread().name) }
     }
 
-    internal fun hasCrash(context: Context): Boolean = crashFile(context).isFile
+    private fun crashDirectory(context: Context) = File(context.filesDir, "diagnostics")
 
-    private fun crashFile(context: Context) =
-        File(File(context.filesDir, "diagnostics"), CRASH_FILE)
+    internal fun hasCrash(context: Context): Boolean {
+        val directory = crashDirectory(context)
+        return File(directory, LEGACY_CRASH_FILE).isFile ||
+            directory.listFiles()?.any { it.isFile && FILE_PATTERN.matches(it.name) } == true
+    }
 
-    /**
-     * Keep all normal Java stack lines and nested Caused by / Suppressed sections.
-     * Sensitive lines are replaced rather than exposing credentials; a single stack
-     * frame is never silently filtered because the type/method name matched a redaction rule.
-     */
     internal fun sanitizedStack(throwable: Throwable): List<String> {
         val raw = StringWriter()
         throwable.printStackTrace(PrintWriter(raw))
@@ -102,65 +109,116 @@ object CrashDiagnostics {
     }
 
     private fun saveCrash(context: Context, throwable: Throwable, kind: String, thread: String) {
-        val target = crashFile(context)
-        val folder = target.parentFile ?: return
-        if (!folder.isDirectory && !folder.mkdirs()) return
-        val temp = File(folder, "$CRASH_FILE.tmp")
-        val header = "time=${clock(System.currentTimeMillis())} pid=${Process.myPid()} thread=${DiagnosticRedactor.redact(thread) ?: "redacted"} kind=$kind"
+        val directory = crashDirectory(context)
+        if (!directory.isDirectory && !directory.mkdirs()) return
+        val whenMillis = System.currentTimeMillis()
+        val pid = Process.myPid()
+        val name = "crash-${whenMillis}-pid${pid}-${sequence.incrementAndGet()}.txt"
+        val target = File(directory, name)
+        val temporary = File(directory, "$name.tmp")
+        val header = "time=${clock(whenMillis)} pid=$pid thread=${DiagnosticRedactor.redact(thread) ?: "redacted"} kind=$kind"
         val lines = sanitizedStack(throwable)
-        BufferedWriter(OutputStreamWriter(FileOutputStream(temp), "UTF-8")).use { out ->
-            out.write(header)
-            out.newLine()
+        FileOutputStream(temporary).use { stream ->
+            val output = BufferedWriter(OutputStreamWriter(stream, "UTF-8"))
+            output.write(header)
+            output.newLine()
             var used = header.length
             for (line in lines) {
                 if (used + line.length > MAX_CRASH_CHARS) {
-                    out.write("[stack truncated after 192 KiB; see device diagnostics if available]")
-                    out.newLine()
+                    output.write("[stack truncated after 192 KiB; see device diagnostics if available]")
+                    output.newLine()
                     break
                 }
-                out.write(line)
-                out.newLine()
+                output.write(line)
+                output.newLine()
                 used += line.length + 1
             }
-            out.flush()
+            output.flush()
+            runCatching { stream.fd.sync() }
         }
-        // Atomic replacement on Android's app-private filesystem; preserve the prior report if
-        // the temporary write failed.
-        if (!temp.renameTo(target)) {
-            target.delete()
-            temp.renameTo(target)
+        // Never overwrite or delete another exception (including the legacy crash).
+        if (!temporary.renameTo(target)) {
+            temporary.delete()
+            return
         }
+        pruneNewCrashes(directory)
     }
 
-    /** Presented before session logs so a screen photo captures the actionable failure first. */
+    internal fun newCrashEntries(directory: File): List<CrashEntry> =
+        directory.listFiles().orEmpty().mapNotNull { file ->
+            if (!file.isFile) return@mapNotNull null
+            val match = FILE_PATTERN.matchEntire(file.name) ?: return@mapNotNull null
+            val millis = match.groupValues[1].toLongOrNull() ?: return@mapNotNull null
+            val pid = match.groupValues[2].toIntOrNull() ?: return@mapNotNull null
+            CrashEntry(file, pid, millis)
+        }.sortedWith(compareByDescending<CrashEntry> { it.recordedAtMillis }
+            .thenByDescending { it.file.name })
+
+    /** Keep only five new crash stacks; the one-file legacy format remains readable. */
+    internal fun pruneNewCrashes(directory: File) {
+        newCrashEntries(directory).drop(MAX_RECENT_CRASHES).forEach { runCatching { it.file.delete() } }
+    }
+
+    private fun crashEntries(context: Context): List<CrashEntry> {
+        val directory = crashDirectory(context)
+        val newer = newCrashEntries(directory).take(MAX_RECENT_CRASHES)
+        val legacy = File(directory, LEGACY_CRASH_FILE)
+        if (!legacy.isFile) return newer
+        val firstLine = runCatching {
+            legacy.bufferedReader().use { it.readLine().orEmpty() }
+        }.getOrDefault("")
+        val pid = HEADER_PID.find(firstLine)?.groupValues?.get(1)?.toIntOrNull()
+        return newer + CrashEntry(legacy, pid, legacy.lastModified())
+    }
+
+    /**
+     * A crash from the connection PID takes precedence over later, unrelated
+     * crashes (e.g. Android 4.4's text-selection popup in the diagnostics UI).
+     */
+    internal fun prioritizeCrashes(entries: List<CrashEntry>, connectionPid: Int?): List<CrashEntry> =
+        entries.sortedWith(compareByDescending<CrashEntry> {
+            connectionPid != null && it.pid == connectionPid
+        }.thenByDescending { it.recordedAtMillis }.thenByDescending { it.file.name })
+
+    /** Current attempt's stack first; clearly distinguish stacks from other PIDs. */
     internal fun displayLines(
         context: Context,
         attempt: ConnectionAttempt?,
         outcome: ConnectionAttemptOutcome?,
     ): List<String> {
-        val crash = runCatching { crashFile(context).takeIf { it.isFile }?.readLines() }.getOrNull()
-            ?.mapNotNull(DiagnosticRedactor::redact).orEmpty()
+        val connectionPid = attempt?.pid
+        val crashes = prioritizeCrashes(crashEntries(context), connectionPid)
         val checkpoint = runCatching {
-            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val pid = p.getInt(KEY_PID, -1)
-            if (attempt == null || pid != attempt.pid) null else {
-                "最后检查点：${p.getString(KEY_STEP, "unknown")} · ${clock(p.getLong(KEY_TIME, 0L))} · pid=$pid"
-            }
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val storedPid = prefs.getInt(KEY_PID, -1)
+            if (attempt == null || storedPid != attempt.pid) null
+            else "最后检查点：${prefs.getString(KEY_STEP, "unknown")} · ${clock(prefs.getLong(KEY_TIME, 0L))} · pid=$storedPid"
         }.getOrNull()
-        if (crash.isEmpty() && checkpoint == null && outcome !is ConnectionAttemptOutcome.Interrupted) {
+        if (crashes.isEmpty() && checkpoint == null && outcome !is ConnectionAttemptOutcome.Interrupted) {
             return emptyList()
         }
         val result = mutableListOf("—— 应用崩溃与启动检查点（本机保存）——")
         if (checkpoint != null) result += checkpoint
-        if (crash.isNotEmpty()) {
-            result += "【Java/Kotlin 异常类型、错误信息与堆栈】"
-            result += crash
-        } else if (outcome is ConnectionAttemptOutcome.Interrupted) {
-            result += "未捕获到 Java/Kotlin 异常堆栈。可能是 Native 崩溃、系统杀进程或强制退出；不能据此判断具体原因。"
-        } else {
-            result += "无 Java/Kotlin 异常堆栈。"
+        val hasMatchingCrash = connectionPid != null && crashes.any { it.pid == connectionPid }
+        if (outcome is ConnectionAttemptOutcome.Interrupted && !hasMatchingCrash) {
+            result += "连接进程 pid=$connectionPid 未找到对应 Java/Kotlin 异常堆栈。可能是 Native 崩溃、系统杀进程或其他退出；下列不同 PID 的异常不能作为此次连接的原因。"
         }
-        result += "注意：包含堆栈的日志仅保存在车机本地；分享前请检查私人信息。"
+        for (entry in crashes) {
+            val matched = connectionPid != null && entry.pid == connectionPid
+            val source = if (matched) "与本次连接 PID 匹配"
+                else if (connectionPid != null) "其他进程异常，非本次连接的直接证据"
+                else "历史 Java/Kotlin 异常"
+            result += "【$source · pid=${entry.pid ?: "未知"} · ${clock(entry.recordedAtMillis)}】"
+            result += runCatching {
+                entry.file.useLines { lines ->
+                    lines.map { DiagnosticRedactor.redact(it) ?: "[redacted sensitive stack line]" }.toList()
+                }
+            }.getOrElse { listOf("读取异常堆栈失败：${it.javaClass.simpleName}") }
+        }
+        if (crashes.isEmpty() && outcome !is ConnectionAttemptOutcome.Interrupted) {
+            result += "无已保存的 Java/Kotlin 异常堆栈。"
+        }
+        result += "注意：最多保留最近 5 次新异常及旧版历史记录，分享前请检查私人信息。"
         return result
     }
 

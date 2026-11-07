@@ -1082,7 +1082,8 @@ class DiPlayActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
             textSize = 16f
             typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
+            // Android 4.4 CS11 crashes while inflating its text-selection popup.
+            setTextIsSelectable(false)
         }
         // Normally one page fits the screen exactly; the scroll only matters for a single line taller than a page.
         val scroll = ScrollView(this).apply { addView(body) }
@@ -1098,25 +1099,45 @@ class DiPlayActivity : ComponentActivity() {
         }
         val previous = footerButton(getString(R.string.failure_detail_previous))
         val next = footerButton(getString(R.string.failure_detail_next))
+        val copy = footerButton(getString(R.string.failure_detail_copy_page))
         val close = footerButton(getString(R.string.close))
         footer.addView(previous, LinearLayout.LayoutParams(0, dp(56), 1f))
-        footer.addView(next, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(12) })
-        footer.addView(close, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(12) })
+        footer.addView(next, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(8) })
+        footer.addView(copy, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(8) })
+        footer.addView(close, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(8) })
         root.addView(footer, LinearLayout.LayoutParams(-1, -2))
         dialog.setContentView(root)
 
         // Never put the unpaginated log into one TextView: API 19 head units can run out of memory.
         var pages: List<List<String>> = listOf(listOf("…"))
         var index = 0
+        var pagesReady = false
         fun showPage() {
             body.text = pages[index].joinToString("\n")
             scroll.scrollTo(0, 0)
             pageLabel.text = getString(R.string.failure_detail_page, index + 1, pages.size)
             previous.isEnabled = index > 0
             next.isEnabled = index < pages.size - 1
+            copy.isEnabled = pagesReady && pages[index].isNotEmpty()
         }
         previous.setOnClickListener { if (index > 0) { index--; showPage() } }
         next.setOnClickListener { if (index < pages.size - 1) { index++; showPage() } }
+        copy.setOnClickListener {
+            if (!pagesReady) return@setOnClickListener
+            // Copy one page at a time to avoid oversized clipboard IPC on Android 4.4.
+            runCatching {
+                systemService(android.content.ClipboardManager::class.java).setPrimaryClip(
+                    android.content.ClipData.newPlainText(
+                        "SBplay failure details page ${index + 1}",
+                        pages[index].joinToString("\n"),
+                    ),
+                )
+            }.onSuccess {
+                toast(getString(R.string.failure_detail_copied_page))
+            }.onFailure {
+                toast(getString(R.string.failure_detail_copy_failed))
+            }
+        }
         close.setOnClickListener { dialog.dismiss() }
         showPage()
         dialog.show()
@@ -1142,6 +1163,7 @@ class DiPlayActivity : ComponentActivity() {
                     if (dialog.isShowing && !isFinishing) {
                         pages = computed
                         index = 0
+                        pagesReady = true
                         showPage()
                     }
                 }
@@ -2281,7 +2303,7 @@ class DiPlayActivity : ComponentActivity() {
         body.addView(label(getString(R.string.manual_grant_cmd_hint), 14, MUTED).apply { setPadding(0, dp(12), 0, dp(6)) })
         body.addView(label(adbCmd, 13, TEXT).apply {
             typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
+            setTextIsSelectable(false)
             setPadding(dp(8), dp(8), dp(8), dp(8))
             setBackgroundColor(0x22FFFFFF)
         })
@@ -3060,10 +3082,11 @@ class DiPlayActivity : ComponentActivity() {
 
     private fun showDiagnosticReport(report: String) {
         val body = column().apply { setPadding(dp(24), dp(12), dp(24), dp(12)) }
-        body.addView(label(getString(R.string.diagnostic_report_copy_hint), 14, MUTED))
+        body.addView(label(getString(R.string.diagnostic_report_view_hint), 14, MUTED))
         body.addView(label(report, 13, TEXT).apply {
             typeface = Typeface.MONOSPACE
-            setTextIsSelectable(true)
+            // Keep Android 4.4's broken text-selection ActionPopupWindow disabled.
+            setTextIsSelectable(false)
         })
         AlertDialog.Builder(this).setTitle(getString(R.string.view_diagnostic_report))
             .setView(ScrollView(this).apply { addView(body) })

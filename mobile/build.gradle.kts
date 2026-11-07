@@ -20,8 +20,8 @@ android {
         applicationId = "com.shihab.diplay"
         minSdk = 19
         targetSdk = 19
-        versionCode = 42
-        versionName = "0.2.24"
+        versionCode = 43
+        versionName = "0.2.25"
         multiDexEnabled = true
         // CS11 only: the head unit is 32-bit armv7 and the bundled libopus ships armeabi-v7a.
         ndk { abiFilters += "armeabi-v7a" }

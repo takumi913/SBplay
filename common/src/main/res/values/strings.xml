@@ -646,6 +646,10 @@
     <string name="failure_detail_page">Page %1$d/%2$d</string>
     <string name="failure_detail_previous">Previous</string>
     <string name="failure_detail_next">Next</string>
+    <string name="failure_detail_copy_page">Copy page</string>
+    <string name="failure_detail_copied_page">Page copied to clipboard.</string>
+    <string name="failure_detail_copy_failed">Could not copy on this head unit.</string>
+    <string name="diagnostic_report_view_hint">To share the entire report, use the saved file or Share. Text selection is disabled on this head unit.</string>
 </resources>
 
 

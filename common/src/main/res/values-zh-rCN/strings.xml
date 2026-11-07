@@ -645,6 +645,10 @@
     <string name="failure_detail_page">第 %1$d/%2$d 页</string>
     <string name="failure_detail_previous">上一页</string>
     <string name="failure_detail_next">下一页</string>
+    <string name="failure_detail_copy_page">复制本页</string>
+    <string name="failure_detail_copied_page">本页日志已复制到剪贴板。</string>
+    <string name="failure_detail_copy_failed">复制失败，请尝试保存诊断报告。</string>
+    <string name="diagnostic_report_view_hint">如需完整日志，请使用已保存的报告文件或分享功能。此车机已禁用长按文字选择。</string>
 </resources>
 
 
