@@ -74,7 +74,7 @@ jobs:
           grep -q "^native-code: 'armeabi-v7a'$" badging.txt
           # Version source of truth is Gradle; published tags must match the actual APK manifest.
           APK_VERSION=$(sed -n "s/^package:.*versionName='\\([^']*\\)'.*/\\1/p" badging.txt | head -n 1)
-          GRADLE_VERSION=$(sed -n 's/^[[:space:]]*versionName = "\\([^"]*\\)"/\\1/p' mobile/build.gradle.kts | head -n 1)
+          GRADLE_VERSION=$(awk -F '"' '/^[[:space:]]*versionName[[:space:]]*=/ {print $2; exit}' mobile/build.gradle.kts)
           test -n "$APK_VERSION" && test "$APK_VERSION" = "$GRADLE_VERSION" || {
             echo "APK version '$APK_VERSION' does not match Gradle '$GRADLE_VERSION'"; exit 1;
           }
