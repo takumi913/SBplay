@@ -28,6 +28,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail before installing the NDK or compiling if this published tag points
+      # to a commit whose versionName was never bumped.
+      - name: Check Release tag against Gradle version before building
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          SOURCE_VERSION=$(awk -F '"' '/^[[:space:]]*versionName[[:space:]]*=/ {print $2; exit}' mobile/build.gradle.kts)
+          if [ -z "$SOURCE_VERSION" ] || [ "$TAG_VERSION" != "$SOURCE_VERSION" ]; then
+            echo "::error::Release tag '$GITHUB_REF_NAME' does not match source versionName '$SOURCE_VERSION'."
+            echo "::error::Bump versionName/versionCode in mobile/build.gradle.kts, commit, then create the release tag pointing to that commit. Editing main alone does not change an existing tag."
+            exit 1
+          fi
+          echo "Release source version OK: $SOURCE_VERSION"
+
       - name: Reject credential files in public source
         run: python3 scripts/check_public_tree.py
 

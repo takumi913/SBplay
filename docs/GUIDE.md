@@ -29,7 +29,7 @@ adb install -r SBplay-<版本>.apk
 需要注意：
 
 - 覆盖安装即可，**不要先卸载**，以保留已有设置；换了签名密钥就无法覆盖安装旧版。
-- 包名 `com.shihab.diplay.hudtest`，debug 签名；APK 内版本名 `0.2.23`，`minSdk` 和 `targetSdk` 都是 19，仅含 `armeabi-v7a`。
+- 包名 `com.shihab.diplay.hudtest`，debug 签名；APK 内版本名 `0.2.24`，`minSdk` 和 `targetSdk` 都是 19，仅含 `armeabi-v7a`。
 - `adb reboot` 之后车机的 USB 调试会被关掉，要重新到车机设置里打开。
 - iPhone 是黑盒发送端，直接插上即可测试；无线连接需要先和车机完成蓝牙配对。
 
@@ -65,12 +65,12 @@ Windows 本地构建（wrapper 指向国内镜像，常用 `--offline`）：
 
 ## 发布
 
-在 GitHub 上发布 Release（tag 形如 `v0.2.23`），工作流会自动：
+发布前先更新 `mobile/build.gradle.kts` 的 `versionName` 和 `versionCode`，将更新提交到 `main`，再从这个新提交创建 tag（例如 `v0.2.24`）。**Release 使用 tag 所指向的源码，不会自动使用随后推送到 main 的修改。**\n\n在 GitHub 上发布 Release（tag 形如 `v0.2.24`），工作流会自动：
 
 1. 构建并校验 APK：`minSdk` / `targetSdk` 为 19、仅 `armeabi-v7a`、v1 签名、内置配件身份。
 2. 跑完单测和 lint。
 3. 把 `SBplay-<tag>.apk` 和 `.sha256` 上传到该 Release。
-4. 发布 Release 时，CI 会校验 tag（如 `v0.2.23`）与 APK 内部版本名一致，不匹配时会停止发布。
+4. 发布 Release 时，CI 会在编译前校验 tag 与源码版本，并在编译后校验 APK 内部版本，不匹配会立即停止发布。
 5. 如果 Release 描述为空，自动填入安装说明和 GitHub 生成的 What's Changed，按 [`.github/release.yml`](../.github/release.yml) 里的标签分组。已有的描述不会被覆盖。
 
 给 PR 打上 `feature`、`bug`、`api19`、`ci`、`docs` 等标签，它们才会出现在对应分组里。

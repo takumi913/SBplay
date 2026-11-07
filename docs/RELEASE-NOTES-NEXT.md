@@ -1,6 +1,6 @@
-# SBplay 0.2.23 — upcoming release notes
+# SBplay 0.2.24 — upcoming release notes
 
-Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release notes](RELEASE-NOTES-0.2.12.md). Measured checks are in [VALIDATION.md](VALIDATION.md). Document new CS11-specific changes for SBplay 0.2.23 here.
+Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release notes](RELEASE-NOTES-0.2.12.md). Measured checks are in [VALIDATION.md](VALIDATION.md). Document new CS11-specific changes for SBplay 0.2.24 here.
 
 ## Microphone uplink (CS11)
 
