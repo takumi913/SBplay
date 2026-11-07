@@ -1039,8 +1039,8 @@ class DiPlayActivity : ComponentActivity() {
     }
 
     /**
-     * The failure-detail pages (FailureDetail): summary first, then the last attempt's key log lines, split into
-     * screen-sized pages so each one is a single photo. Read on a worker thread; display only.
+     * The failure-detail pages (FailureDetail): summary first, then every retained line from the latest
+     * attempt. Load and paginate on worker threads; render only one screen-sized page at a time.
      */
     private fun showFailureDetail() {
         val appContext = applicationContext
@@ -1103,7 +1103,8 @@ class DiPlayActivity : ComponentActivity() {
         root.addView(footer, LinearLayout.LayoutParams(-1, -2))
         dialog.setContentView(root)
 
-        var pages: List<List<String>> = listOf(lines)
+        // Never put the unpaginated log into one TextView: API 19 head units can run out of memory.
+        var pages: List<List<String>> = listOf(listOf("…"))
         var index = 0
         fun showPage() {
             body.text = pages[index].joinToString("\n")
@@ -1117,20 +1118,32 @@ class DiPlayActivity : ComponentActivity() {
         close.setOnClickListener { dialog.dismiss() }
         showPage()
         dialog.show()
-        // Paginate once the real text width and height are known, with the TextView's own font metrics.
+        // Measure layout on the UI thread; paginate in the background so long logs do not freeze the car.
         scroll.post {
             val width = (body.width - body.paddingLeft - body.paddingRight).toFloat()
             val lineHeight = body.lineHeight
-            if (width <= 0f || lineHeight <= 0 || scroll.height <= 0) return@post
-            val rowsPerPage = (scroll.height / lineHeight).coerceAtLeast(1)
-            val paint = body.paint
-            // A little slack: word wrapping can need one row more than the raw text width suggests.
-            val usable = width * 0.95f
-            pages = FailureDetail.paginate(lines, rowsPerPage) { line ->
-                kotlin.math.ceil(paint.measureText(line) / usable).toInt().coerceAtLeast(1)
+            val viewportHeight = scroll.height
+            val paint = android.text.TextPaint(body.paint)
+            com.shilapi.xcertplay.compat.WorkerThreads.start("diplay-failure-pages") {
+                val computed = if (width > 0f && lineHeight > 0 && viewportHeight > 0) {
+                    val rowsPerPage = (viewportHeight / lineHeight).coerceAtLeast(1)
+                    // Leave a little slack for wrapping; only the selected page becomes TextView text.
+                    val usable = width * 0.95f
+                    FailureDetail.paginate(lines, rowsPerPage) { line ->
+                        kotlin.math.ceil(paint.measureText(line) / usable).toInt().coerceAtLeast(1)
+                    }
+                } else {
+                    // Layout measurement unavailable: still paginate, never render the entire file at once.
+                    FailureDetail.paginate(lines, rowsPerPage = 16) { 1 }
+                }
+                runOnUiThread {
+                    if (dialog.isShowing && !isFinishing) {
+                        pages = computed
+                        index = 0
+                        showPage()
+                    }
+                }
             }
-            index = 0
-            showPage()
         }
     }
 

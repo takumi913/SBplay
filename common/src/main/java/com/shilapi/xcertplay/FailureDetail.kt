@@ -8,39 +8,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * “失败详情”页的内容：一屏一页、能直接拍照的失败摘要和关键日志。
+ * “失败详情”页的内容：一屏一页、便于拍照的失败摘要和最近一次连接的完整会话日志。
  *
- * 以前要看失败原因，得先“保存诊断报告”再“查看报告”，报告是几份日志从旧到新拼成的一长段，
- * 这次失败在最末尾，中间夹着大量主题、画面表面之类的行。这里只取最近一次连接（最后一个
- * `Host started` 起）的关键行，摘要放最前面。
- *
- * 只读、只显示：日志行来自已经脱敏的会话日志（SessionLogFile 写入前就过了 DiagnosticRedactor），
- * 显示前再脱敏一次；摘要来自 ConnectionAttemptRecord，它在写入时已脱敏。不上传、不改任何连接状态。
- * 判定逻辑都是纯函数，方便单测；[collect] 负责读文件。
+ * 不按关键字过滤，也不限制显示行数；只受 SessionLogFile 已保留的日志文件范围约束。
+ * 只读、只显示：日志写入前已脱敏，这里显示前再脱敏一次；摘要也已脱敏。
+ * 不上传、不修改连接状态。
  */
 internal object FailureDetail {
-    /** 最多显示的关键行数：再多就拍不完了，完整内容仍在诊断报告里。 */
-    const val MAX_KEY_LINES = 120
-
-    /** 关键行：连接步骤、错误、失败、重试、会话起止。 */
-    private val KEEP = listOf(
-        "STEP ", "ERROR", "CONNECTION_DIAGNOSTIC", "Exception", "Error", "error=",
-        "failed", "Failed", "failure", "失败", "timed out", "timeout", "denied", "refused", "rejected",
-        "unplugged", "retrying", "Reconnecting", "recovery stopped", "Host started",
-        "Starting CarPlay controller", "AirPlay session", "DiPlay log started",
-    )
-
-    /** 明确无关的高频行，即使含有上面的词也不要。 */
-    private val NOISE = listOf(
-        "THEME_DIAGNOSTIC", "Texture surface", "attach surface", "Display detected", "codec capabilities",
-    )
-
     /** 一次连接从哪里开始：主机界面实例启动时写的这一行。 */
     private const val ATTEMPT_START = "Host started"
     private const val LOG_START = "DiPlay log started"
-
-    fun isKeyLine(line: String): Boolean =
-        line.isNotBlank() && NOISE.none { line.contains(it) } && KEEP.any { line.contains(it) }
 
     /**
      * 最近一次连接的所有行：从最后一个 `Host started` 往前找到它所在日志的开头一行，取到末尾。
@@ -53,12 +30,6 @@ internal object FailureDetail {
         return lines.subList(header, lines.size)
     }
 
-    /** 最近一次连接里的关键行，超过上限时保留最后的部分（失败总在后面）。 */
-    fun keyLines(lines: List<String>, max: Int = MAX_KEY_LINES): List<String> {
-        val kept = lastAttempt(lines).filter(::isKeyLine)
-        return if (kept.size <= max) kept else kept.takeLast(max)
-    }
-
     /** 页首的摘要。[outcome] 为 null 表示没有记录到失败。 */
     fun summary(
         outcome: ConnectionAttemptOutcome?,
@@ -68,7 +39,7 @@ internal object FailureDetail {
     ): List<String> {
         val lines = mutableListOf("SBplay $appVersion · $device")
         if (outcome == null) {
-            lines += "【没有记录到失败】下面是最近一次连接的关键日志。"
+            lines += "【没有记录到失败】下面是最近一次连接的完整日志。"
             return lines
         }
         lines += "【${ConnectionAttemptRecord.title(outcome)}】"
@@ -105,18 +76,32 @@ internal object FailureDetail {
         return pages
     }
 
-    /** 摘要 + 分隔行 + 关键行，交给界面分页。读文件，放在后台线程里调用。 */
-    fun collect(context: Context, appVersion: String): List<String> {
-        val logLines = SessionLogFile.REPORT_NAMES.flatMap { name ->
+    /**
+     * 从新到旧查找最近一次 Host started，避免为一次连接读取全部历史归档。
+     * 如果日志被轮转到旧文件，则将该文件从最近连接起的内容和之后的文件顺序拼接。
+     * 没有 Host started 时回退到全部当前保留的日志；不在这里按内容或行数丢弃。
+     */
+    private fun retainedAttemptLines(context: Context): List<String> {
+        val chunks = mutableListOf<List<String>>()
+        for (name in SessionLogFile.REPORT_NAMES.asReversed()) {
             val file = File(context.filesDir, "logs/$name")
-            if (file.isFile) runCatching { file.readLines() }.getOrDefault(emptyList()) else emptyList()
+            if (!file.isFile) continue
+            val lines = runCatching { file.readLines() }.getOrDefault(emptyList())
+            val found = lines.any { it.contains(ATTEMPT_START) }
+            chunks.add(if (found) lastAttempt(lines) else lines)
+            if (found) break
         }
-        val key = keyLines(logLines).mapNotNull(DiagnosticRedactor::redact)
+        return chunks.asReversed().flatMap { it }
+    }
+
+    /** 摘要 + 分隔行 + 最近一次连接的完整日志；读取发生在后台线程。 */
+    fun collect(context: Context, appVersion: String): List<String> {
+        val details = retainedAttemptLines(context).mapNotNull(DiagnosticRedactor::redact)
         val outcome = runCatching { ConnectionAttemptRecord.outcome(context) }.getOrNull()
         val device = "Android ${Build.VERSION.RELEASE ?: "?"} · ${Build.MODEL ?: "?"}"
         return summary(outcome, appVersion, device) +
-            "—— 最近一次连接的关键日志（${key.size} 行，完整内容见诊断报告）——" +
-            key.ifEmpty { listOf("（没有找到日志：可能还没有连接过，或日志已被清除）") }
+            "—— 最近一次连接的完整日志（${details.size} 行，仅限已保留的日志文件）——" +
+            details.ifEmpty { listOf("（没有找到日志：可能还没有连接过，或日志已被清除）") }
     }
 
     private fun clockText(millis: Long): String =

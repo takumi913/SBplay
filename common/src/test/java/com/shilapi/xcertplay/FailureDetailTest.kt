@@ -1,7 +1,6 @@
 package com.shilapi.xcertplay
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,33 +22,32 @@ class FailureDetailTest {
     )
 
     @Test fun onlyTheLastAttemptIsShown() {
-        val lines = FailureDetail.keyLines(earlierAttempt + lastAttempt)
-        assertFalse(lines.any { it.contains("old failure") })
-        assertTrue(lines.first().startsWith("DiPlay log started 2026-11-07 11:18:22"))
-        assertTrue(lines.any { it.contains("Host started") && it.contains("transport=wired") })
+        val shown = FailureDetail.lastAttempt(earlierAttempt + lastAttempt)
+        assertEquals(lastAttempt, shown)
     }
 
-    @Test fun keyLinesKeepStepsAndErrorsAndDropNoise() {
-        val lines = FailureDetail.keyLines(lastAttempt)
-        assertTrue(lines.any { it.contains("STEP usb/discover") })
-        assertTrue(lines.any { it.contains("ERROR Could not connect RFCOMM") })
-        // Noise is dropped even when it carries a keyword ("failed=no" in the theme line).
-        assertFalse(lines.any { it.contains("THEME_DIAGNOSTIC") })
-        assertFalse(lines.any { it.contains("Texture surface") })
-        assertFalse(lines.any { it.contains("Display detected") })
-        assertFalse(lines.any { it.contains("unrelated") })
+    @Test fun diagnosticsSurfacesAndOrdinaryMessagesArePreserved() {
+        val shown = FailureDetail.lastAttempt(lastAttempt)
+        assertEquals(lastAttempt, shown)
+        assertTrue(shown.any { it.contains("THEME_DIAGNOSTIC") })
+        assertTrue(shown.any { it.contains("Texture surface") })
+        assertTrue(shown.any { it.contains("Display detected") })
+        assertTrue(shown.any { it.contains("some unrelated line") })
     }
 
     @Test fun withoutAnyAttemptStartEverythingIsConsidered() {
         val lines = listOf("11:00:00.000  STEP mfi/start: preparing", "11:00:01.000  nothing")
-        assertEquals(listOf("11:00:00.000  STEP mfi/start: preparing"), FailureDetail.keyLines(lines))
+        assertEquals(lines, FailureDetail.lastAttempt(lines))
     }
 
-    @Test fun tooManyKeyLinesKeepTheNewest() {
-        val lines = listOf("11:00:00.000  Host started") + (1..300).map { "11:00:01.000  STEP n=$it" }
-        val kept = FailureDetail.keyLines(lines, max = 50)
-        assertEquals(50, kept.size)
-        assertEquals("11:00:01.000  STEP n=300", kept.last())
+    @Test fun hundredsOfLogLinesAreNotTruncated() {
+        val lines = listOf("11:00:00.000  Host started") +
+            (1..300).map { "11:00:01.000  diagnostic n=$it" }
+        val shown = FailureDetail.lastAttempt(lines)
+        assertEquals(301, shown.size)
+        assertEquals(lines, shown)
+        val pages = FailureDetail.paginate(shown, rowsPerPage = 8) { 1 }
+        assertEquals(lines, pages.flatten())
     }
 
     @Test fun summaryNamesOutcomeTransportStepAndFullReason() {
