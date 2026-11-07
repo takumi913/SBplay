@@ -25,7 +25,7 @@ class DiPlaySessionService : Service() {
         @Suppress("DEPRECATION")
         val builder = Notification.Builder(this)
         builder.setSmallIcon(R.drawable.ic_diplay_notification)
-            .setContentTitle("LynkPaly")
+            .setContentTitle("SBplay")
             .setContentText("CarPlay connection running")
             .setContentIntent(open).setOngoing(true)
         startForeground(1, builder.build())

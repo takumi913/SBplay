@@ -438,7 +438,7 @@ class DiPlayActivity : ComponentActivity() {
             setPadding(dp(12), 0, 0, 0)
             gravity = Gravity.CENTER_VERTICAL
         }
-        titles.addView(label("LynkPaly", 17, TEXT, true))
+        titles.addView(label("SBplay", 17, TEXT, true))
         titles.addView(label("CarPlay · CS11", 10, MUTED))
         bar.addView(titles, LinearLayout.LayoutParams(0, -2, 1f))
 
@@ -2285,7 +2285,7 @@ class DiPlayActivity : ComponentActivity() {
         })
         body.addView(button(getString(R.string.copy_command), false) {
             systemService(android.content.ClipboardManager::class.java).setPrimaryClip(
-                android.content.ClipData.newPlainText("DiPlay ADB Command", adbCmd)
+                android.content.ClipData.newPlainText("SBplay ADB Command", adbCmd)
             )
             toast(getString(R.string.copied_to_the_car_clipboard_run_the_command_on_your_comput))
         }, matchButton(8, 50))
@@ -2954,7 +2954,7 @@ class DiPlayActivity : ComponentActivity() {
         gaugePill?.text = pillText()
     }
 
-    private fun reportFileName() = "DiPlay-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.txt"
+    private fun reportFileName() = "SBplay-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.txt"
 
     private fun chooseReportDestination() {
         // Some head units omit or disable DocumentsUI. Launch itself can throw, before
@@ -2972,7 +2972,7 @@ class DiPlayActivity : ComponentActivity() {
         com.shilapi.xcertplay.compat.WorkerThreads.start("diplay-export") {
             val result = runCatching {
                 val report = buildString {
-                    appendLine("DiPlay ${version()} · private beta diagnostic report")
+                    appendLine("SBplay ${version()} · diagnostic report")
                     appendLine("Android ${Build.VERSION.RELEASE} / API 19")
                     appendLine("Head unit: ${Build.MANUFACTURER} ${Build.MODEL}")
                     // The saved mode and the running session's transport are reported apart: they can only
@@ -3026,7 +3026,7 @@ class DiPlayActivity : ComponentActivity() {
                         .setMessage(when {
                             savedReport.savedInApp -> getString(R.string.diagnostic_report_saved_in_app)
                             savedReport.savedPath != null -> getString(R.string.diagnostic_report_saved_to_path, savedReport.savedPath)
-                            uri == null -> "Downloads/LynkPaly/$fileName"
+                            uri == null -> "Downloads/SBplay/$fileName"
                             else -> getString(R.string.your_report_was_saved_to_the_selected_location)
                         })
                         .setPositiveButton(getString(R.string.view_diagnostic_report)) { _, _ -> showDiagnosticReport(report) }

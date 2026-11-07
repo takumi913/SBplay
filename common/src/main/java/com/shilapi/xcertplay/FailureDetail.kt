@@ -17,7 +17,7 @@ import java.util.Locale
 internal object FailureDetail {
     /** 一次连接从哪里开始：主机界面实例启动时写的这一行。 */
     private const val ATTEMPT_START = "Host started"
-    private const val LOG_START = "DiPlay log started"
+    private val LOG_START_MARKERS = listOf("SBplay log started", "DiPlay log started")
 
     /**
      * 最近一次连接的所有行：从最后一个 `Host started` 往前找到它所在日志的开头一行，取到末尾。
@@ -26,7 +26,7 @@ internal object FailureDetail {
     fun lastAttempt(lines: List<String>): List<String> {
         val start = lines.indexOfLast { it.contains(ATTEMPT_START) }
         if (start < 0) return lines
-        val header = (start downTo 0).firstOrNull { lines[it].contains(LOG_START) } ?: start
+        val header = (start downTo 0).firstOrNull { LOG_START_MARKERS.any { marker -> lines[it].contains(marker) } } ?: start
         return lines.subList(header, lines.size)
     }
 

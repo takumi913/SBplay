@@ -72,6 +72,18 @@ jobs:
           grep -q "^targetSdkVersion:'19'" badging.txt
           # armeabi-v7a is the only ABI: any other would be dead weight (or a mismatch) on a 32-bit head unit.
           grep -q "^native-code: 'armeabi-v7a'$" badging.txt
+          # Version source of truth is Gradle; published tags must match the actual APK manifest.
+          APK_VERSION=$(sed -n "s/^package:.*versionName='\\([^']*\\)'.*/\\1/p" badging.txt | head -n 1)
+          GRADLE_VERSION=$(sed -n 's/^[[:space:]]*versionName = "\\([^"]*\\)"/\\1/p' mobile/build.gradle.kts | head -n 1)
+          test -n "$APK_VERSION" && test "$APK_VERSION" = "$GRADLE_VERSION" || {
+            echo "APK version '$APK_VERSION' does not match Gradle '$GRADLE_VERSION'"; exit 1;
+          }
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            test "$TAG_VERSION" = "$APK_VERSION" || {
+              echo "Release tag '$GITHUB_REF_NAME' does not match APK version '$APK_VERSION'"; exit 1;
+            }
+          fi
           "$BT/apksigner" verify --verbose --min-sdk-version 19 --max-sdk-version 19 "$APK" | tee signer.txt
           grep -q "Verified using v1 scheme (JAR signing): true" signer.txt
           unzip -l "$APK" | grep -q "assets/offline-mfi/identity.pk8"
@@ -129,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           SRC=$(ls dist/*.apk)
-          # e.g. SBplay-v0.2.22-cs11.1.apk ; slashes are not valid in asset names
+          # e.g. SBplay-v0.2.23.apk ; slashes are not valid in asset names
           ASSET="SBplay-${TAG//\//-}.apk"
           mv "$SRC" "dist/$ASSET"
           (cd dist && sha256sum "$ASSET" | tee "$ASSET.sha256")

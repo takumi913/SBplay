@@ -1,4 +1,4 @@
-# Building DiPlay
+# Building SBplay (CS11)
 
 > ## This fork (Lynk & Co CS11) — read first
 >
@@ -24,7 +24,7 @@
 >   v1-signed / carries the identity, then uploads it as the `SBplay-CS11-API19-apk` artifact
 >   (Actions run page → Artifacts). Unit tests and lint run after the upload as gates.
 >   CI proves it compiles and is installable; it does **not** prove it works — 必须上机复验.
-> - **Releases**: publish a GitHub Release (tag e.g. `v0.2.22-cs11.1`) and the same workflow attaches
+> - **Releases**: publish a GitHub Release (tag e.g. `v0.2.23`) and the same workflow attaches
 >   `SBplay-<tag>.apk` + `.sha256` to it. An empty description is filled with install info plus
 >   GitHub's auto-generated "What's Changed" (grouped by labels via `.github/release.yml`); a
 >   description you wrote yourself is never overwritten. Tip: use *Generate release notes* in the UI
