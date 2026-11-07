@@ -75,6 +75,8 @@ class DiPlayActivity : ComponentActivity() {
     /** The action card's title and hint: they carry the last failure once a failed attempt has ended. */
     private var actionTitle: TextView? = null
     private var actionHint: TextView? = null
+    /** Opens the failure-detail pages; shown only while a failed, interrupted or no-video attempt is on record. */
+    private var failureDetailButton: View? = null
     private var setupError: String? = null
     private var status: TextView? = null
     private var connectButton: Button? = null
@@ -373,7 +375,7 @@ class DiPlayActivity : ComponentActivity() {
         adbStatus = null
         headerStatusText = null; headerStatusDot = null
         gaugeView = null; gaugeTitle = null; gaugeSubtitle = null; gaugePill = null
-        actionTitle = null; actionHint = null
+        actionTitle = null; actionHint = null; failureDetailButton = null
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -753,6 +755,20 @@ class DiPlayActivity : ComponentActivity() {
         } else {
             buttons.addView(primary, LinearLayout.LayoutParams(dp(170), dp(52)))
         }
+        // In both layouts: a session can end while this page stays open, and the card is not rebuilt then.
+        // The once-a-second refresh toggles its visibility (refreshActionCardText).
+        val details = SettingsWidgets.createButton(
+            context = this,
+            title = getString(R.string.view_failure_detail),
+            style = SettingsWidgets.ButtonStyle.SECONDARY,
+            theme = nightPalette,
+            minHeightDp = 52,
+            textSizeSp = 13f,
+        ) { showFailureDetail() }.apply {
+            visibility = if (lastAttemptOutcome() != null) View.VISIBLE else View.GONE
+        }
+        failureDetailButton = details
+        buttons.addView(details, LinearLayout.LayoutParams(dp(136), dp(52)).apply { leftMargin = dp(10) })
         card.addView(buttons, LinearLayout.LayoutParams(-2, -2))
         return card
     }
@@ -1018,6 +1034,104 @@ class DiPlayActivity : ComponentActivity() {
         val hintText = actionHintText(wireless, outcome)
         if (title.text?.toString() != titleText) title.text = titleText
         if (hint.text?.toString() != hintText) hint.text = hintText
+        val detailsVisibility = if (outcome != null) View.VISIBLE else View.GONE
+        failureDetailButton?.let { if (it.visibility != detailsVisibility) it.visibility = detailsVisibility }
+    }
+
+    /**
+     * The failure-detail pages (FailureDetail): summary first, then the last attempt's key log lines, split into
+     * screen-sized pages so each one is a single photo. Read on a worker thread; display only.
+     */
+    private fun showFailureDetail() {
+        val appContext = applicationContext
+        val appVersion = runCatching { version() }.getOrDefault("?")
+        com.shilapi.xcertplay.compat.WorkerThreads.start("diplay-failure-detail") {
+            val lines = runCatching { FailureDetail.collect(appContext, appVersion) }
+                .getOrElse { listOf("读取日志失败：${it.javaClass.simpleName}") }
+            runOnUiThread { if (!isFinishing) presentFailureDetail(lines) }
+        }
+    }
+
+    private fun presentFailureDetail(lines: List<String>) {
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        // Black on white text, large monospace: the page is meant to be photographed from the driver's seat.
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(TextView(this).apply {
+            text = getString(R.string.failure_detail_title)
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            typeface = TYPE_BOLD
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        val pageLabel = TextView(this).apply {
+            setTextColor(Color.rgb(0xC8, 0xC8, 0xC8))
+            textSize = 18f
+        }
+        header.addView(pageLabel)
+        root.addView(header, LinearLayout.LayoutParams(-1, -2))
+        val body = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+        }
+        // Normally one page fits the screen exactly; the scroll only matters for a single line taller than a page.
+        val scroll = ScrollView(this).apply { addView(body) }
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(8); bottomMargin = dp(8) })
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        fun footerButton(title: String) = Button(this).apply {
+            text = title
+            isAllCaps = false
+            textSize = 18f
+        }
+        val previous = footerButton(getString(R.string.failure_detail_previous))
+        val next = footerButton(getString(R.string.failure_detail_next))
+        val close = footerButton(getString(R.string.close))
+        footer.addView(previous, LinearLayout.LayoutParams(0, dp(56), 1f))
+        footer.addView(next, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(12) })
+        footer.addView(close, LinearLayout.LayoutParams(0, dp(56), 1f).apply { leftMargin = dp(12) })
+        root.addView(footer, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(root)
+
+        var pages: List<List<String>> = listOf(lines)
+        var index = 0
+        fun showPage() {
+            body.text = pages[index].joinToString("\n")
+            scroll.scrollTo(0, 0)
+            pageLabel.text = getString(R.string.failure_detail_page, index + 1, pages.size)
+            previous.isEnabled = index > 0
+            next.isEnabled = index < pages.size - 1
+        }
+        previous.setOnClickListener { if (index > 0) { index--; showPage() } }
+        next.setOnClickListener { if (index < pages.size - 1) { index++; showPage() } }
+        close.setOnClickListener { dialog.dismiss() }
+        showPage()
+        dialog.show()
+        // Paginate once the real text width and height are known, with the TextView's own font metrics.
+        scroll.post {
+            val width = (body.width - body.paddingLeft - body.paddingRight).toFloat()
+            val lineHeight = body.lineHeight
+            if (width <= 0f || lineHeight <= 0 || scroll.height <= 0) return@post
+            val rowsPerPage = (scroll.height / lineHeight).coerceAtLeast(1)
+            val paint = body.paint
+            // A little slack: word wrapping can need one row more than the raw text width suggests.
+            val usable = width * 0.95f
+            pages = FailureDetail.paginate(lines, rowsPerPage) { line ->
+                kotlin.math.ceil(paint.measureText(line) / usable).toInt().coerceAtLeast(1)
+            }
+            index = 0
+            showPage()
+        }
     }
 
     private fun pillText(): String = if (isWirelessMode()) "无线 · 5 GHz" else "USB · 未插入"
@@ -1201,6 +1315,8 @@ class DiPlayActivity : ComponentActivity() {
             connectionSetupControls(card)
         }
         section(content, getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
+            // The quick look first: no file to save, one photo per page.
+            card.addView(button(getString(R.string.view_recent_errors), false) { showFailureDetail() }, matchButton(10, 60))
             exportButton = button(if (exportInProgress) getString(R.string.saving_report) else getString(R.string.save_diagnostic_report), false) {
                 chooseReportDestination()
             }.apply { isEnabled = !exportInProgress }
