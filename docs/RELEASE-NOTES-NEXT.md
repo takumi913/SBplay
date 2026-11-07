@@ -1,6 +1,6 @@
-# SBplay 0.2.25 — upcoming release notes
+# SBplay 0.2.26 — upcoming release notes
 
-Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release notes](RELEASE-NOTES-0.2.12.md). Measured checks are in [VALIDATION.md](VALIDATION.md). Document new CS11-specific changes for SBplay 0.2.25 here.
+Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release notes](RELEASE-NOTES-0.2.12.md). Measured checks are in [VALIDATION.md](VALIDATION.md). Document new CS11-specific changes for SBplay 0.2.26 here.
 
 ## Crash diagnostics on Android 4.4.3
 
@@ -12,6 +12,20 @@ Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release
 - Show crashes matching the interrupted connection's PID before other process crashes;
   unrelated crashes are labeled explicitly, avoiding mistaken root-cause attribution.
 - **必须上机复验**: APK compilation/CI cannot establish runtime behavior on CS11.
+
+## CS11 manual hotspot startup
+
+- The host now takes the wireless hotspot SSID, passphrase and open/WPA2 security
+  from the car firmware's stored SoftAP configuration (same source as the settings UI).
+  When the firmware does not expose a usable pair, the previously saved manual values
+  remain a fallback. A firmware profile with an unsupported raw 64-digit PSK is
+  rejected with an actionable message rather than silently using a wrong credential.
+- For firmware-provided AP credentials, reset stale saved manual band/channel hints
+  to automatic discovery rather than conflicting with the active profile.
+- Hotspot configuration errors are shown in the app's existing connection-failure UI
+  instead of crashing in CarPlayRuntimeConfig's constructor. The session isn't started.
+- **必须上机复验**：CI build/tests do not prove that this firmware's AP exposes a
+  readable, correctly quoted password or that wireless CarPlay pairs successfully.
 
 ## Microphone uplink (CS11)
 

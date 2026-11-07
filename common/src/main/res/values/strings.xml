@@ -650,6 +650,9 @@
     <string name="failure_detail_copied_page">Page copied to clipboard.</string>
     <string name="failure_detail_copy_failed">Could not copy on this head unit.</string>
     <string name="diagnostic_report_view_hint">To share the entire report, use the saved file or Share. Text selection is disabled on this head unit.</string>
+    <string name="manual_hotspot_firmware_credentials_unsupported">The car hotspot settings cannot be used for CarPlay. In the car hotspot settings, choose a WPA2 password of 8–63 characters (not a 64-digit raw key), then retry.</string>
+    <string name="manual_hotspot_missing_credentials">No usable car hotspot settings were found. Turn on the car hotspot and check its name and password in car settings; alternatively, enter valid hotspot details in SBplay.</string>
+    <string name="manual_hotspot_saved_security_mismatch">Saved hotspot security does not match its password. Please re-enter the hotspot name and password in SBplay.</string>
 </resources>
 
 

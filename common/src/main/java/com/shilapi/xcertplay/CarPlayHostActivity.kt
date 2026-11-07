@@ -163,6 +163,46 @@ class CarPlayHostActivity : ComponentActivity() {
         super.attachBaseContext(AppLocale.wrap(newBase))
     }
 
+    /**
+     * Read the same AP identity that the settings screen advertises. A stale or
+     * empty manual SSID must never reach CarPlayRuntimeConfig's require() block.
+     */
+    private fun prepareManualHotspotCredentials(): String? {
+        if (!wirelessEnabled || wirelessHotspotMode != WirelessHotspotMode.MANUAL) return null
+        return when (val chosen = ManualHotspotCredentials.resolve(this)) {
+            is ManualHotspotCredentials.Result.Unavailable ->
+                getString(ManualHotspotCredentials.messageResource(chosen.issue))
+            is ManualHotspotCredentials.Result.Ready -> {
+                manualHotspotSsid = chosen.ssid
+                manualHotspotPassphrase = chosen.passphrase
+                manualHotspotSecurity = chosen.security
+                if (chosen.source == ManualHotspotCredentials.Source.CAR_FIRMWARE) {
+                    // Persisted manual channel/band may belong to an earlier AP profile.
+                    manualHotspotBand = ManualHotspotBand.AUTO
+                    manualHotspotChannel = 0
+                }
+                appendLog("Manual hotspot configuration ready source=${chosen.source} security=${chosen.security}; values hidden")
+                null
+            }
+        }
+    }
+
+    /** A bad hotspot configuration is a recorded connection failure, not an app crash. */
+    private fun stopForInvalidStartupConfig(reason: String) {
+        val stage = if (wirelessEnabled) "无线热点配置检查" else "连接配置检查"
+        appendLog("Connection startup blocked: $reason")
+        CrashDiagnostics.checkpoint(this, "connection configuration rejected")
+        ConnectionAttemptRecord.failed(this, stage, reason)
+        CarPlayProgress.clear()
+        CarPlayProgress.clearTransport()
+        clearLaunchSnapshot()
+        // No controller was created. Keep the home process alive so it can show
+        // the persisted failure immediately; onDestroy otherwise kills the process.
+        finishingFromBackground = true
+        showDiPlayHome(noAnimation = true)
+        finish()
+    }
+
     private fun createRuntimeConfig(): CarPlayRuntimeConfig = CarPlayRuntimeConfig(
         mfiTarget = mfiTarget,
         remoteMfiServer = remoteMfiServer.trim().takeIf { it.isNotEmpty() },
@@ -2390,7 +2430,21 @@ class CarPlayHostActivity : ComponentActivity() {
         attemptRecorded = true
         val controllerGeneration = restartGeneration
         CrashDiagnostics.checkpoint(this, "before createRuntimeConfig")
-        val config = createRuntimeConfig()
+        val hotspotError = prepareManualHotspotCredentials()
+        if (hotspotError != null) {
+            stopForInvalidStartupConfig(hotspotError)
+            return
+        }
+        val config = try {
+            createRuntimeConfig()
+        } catch (error: IllegalArgumentException) {
+            // Invalid configuration should not terminate the Android process.
+            // Do not place credentials or other sensitive validation text in logs.
+            val safe = DiagnosticRedactor.redact(error.message.orEmpty())
+            stopForInvalidStartupConfig(safe?.takeIf { it.isNotBlank() }
+                ?: "连接参数无效，请检查热点和连接设置")
+            return
+        }
         CrashDiagnostics.checkpoint(this, "after createRuntimeConfig")
         val effectiveSize = if (isMultiWindowActive() &&
             maximumDetectedWidthPixels >= size.width && maximumDetectedHeightPixels >= size.height &&

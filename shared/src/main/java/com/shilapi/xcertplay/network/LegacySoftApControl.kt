@@ -53,7 +53,7 @@ object LegacySoftApControl {
     internal fun storedConfiguration(config: WifiConfiguration): StoredApConfiguration =
         StoredApConfiguration(
             ssid = unquote(config.SSID),
-            password = preSharedKey(config),
+            password = unquote(preSharedKey(config)),
             security = storedSecurity(config.allowedKeyManagement, hasWepKey(config)),
         )
 

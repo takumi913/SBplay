@@ -2726,16 +2726,22 @@ class DiPlayActivity : ComponentActivity() {
         // (docs/_digest/84), so there is nothing for the owner to type. What can still block a connection is
         // the car having no usable hotspot configuration at all, and that is what this checks - the saved
         // form is only a fallback for a unit whose AP configuration cannot be read.
-        if (wireless && AirPlayPersistence.loadWirelessHotspotMode(this) == WirelessHotspotMode.MANUAL &&
-            !carHotspotSelfConfigured() &&
-            manualHotspotError() != null) {
-            // Fallback path only: the firmware had no readable AP configuration, so the owner's saved form
-            // is all there is and it has to be valid. The dialog is the same one the mode used to show.
-            askHotspotCredentials { ssid, password ->
-                saveHotspotCredentials(ssid, password)
-                connect(true)
+        if (wireless && AirPlayPersistence.loadWirelessHotspotMode(this) == WirelessHotspotMode.MANUAL) {
+            when (val credentials = ManualHotspotCredentials.resolve(this)) {
+                is ManualHotspotCredentials.Result.Ready -> Unit
+                is ManualHotspotCredentials.Result.Unavailable -> {
+                    if (credentials.issue == ManualHotspotCredentials.Issue.MISSING_SAVED) {
+                        // The firmware could not supply a usable pair: allow manual fallback.
+                        askHotspotCredentials { ssid, password ->
+                            saveHotspotCredentials(ssid, password)
+                            connect(true)
+                        }
+                    } else {
+                        toast(getString(ManualHotspotCredentials.messageResource(credentials.issue)))
+                    }
+                    return
+                }
             }
-            return
         }
         if (wireless && carHotspotOff()) { carHotspotOffDialog(); return }
         if (wireless && DiPlayPreferences.phoneAddress(this) == null) {

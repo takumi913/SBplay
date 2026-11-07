@@ -649,6 +649,9 @@
     <string name="failure_detail_copied_page">本页日志已复制到剪贴板。</string>
     <string name="failure_detail_copy_failed">复制失败，请尝试保存诊断报告。</string>
     <string name="diagnostic_report_view_hint">如需完整日志，请使用已保存的报告文件或分享功能。此车机已禁用长按文字选择。</string>
+    <string name="manual_hotspot_firmware_credentials_unsupported">车机保存的热点配置暂不支持 CarPlay。请在原车热点设置中改用 8–63 位 WPA2 密码（不要使用 64 位原始密钥），然后重试。</string>
+    <string name="manual_hotspot_missing_credentials">未读到可用的车机热点配置。请在原车设置中开启热点并检查名称和密码，或在 SBplay 中手动填写有效的热点信息。</string>
+    <string name="manual_hotspot_saved_security_mismatch">保存的热点安全类型与密码不匹配，请在 SBplay 中重新填写热点名称和密码。</string>
 </resources>
 
 
