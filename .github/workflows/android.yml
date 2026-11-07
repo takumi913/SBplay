@@ -61,8 +61,9 @@ jobs:
           APK=mobile/build/outputs/apk/debug/mobile-debug.apk
           BT="$ANDROID_HOME/build-tools/36.0.0"
           test -f "$APK"
-          "$BT/aapt2" dump badging "$APK" | tee badging.txt | grep -E "^(package|sdkVersion|targetSdkVersion|native-code)"
-          grep -q "^sdkVersion:'19'" badging.txt
+          "$BT/aapt2" dump badging "$APK" | tee badging.txt | grep -E "^(package|sdkVersion|minSdkVersion|targetSdkVersion|native-code)"
+          # aapt2 prints the minimum as "minSdkVersion" (newer) or "sdkVersion" (older).
+          grep -Eq "^(min)?[sS]dkVersion:'19'" badging.txt
           grep -q "^targetSdkVersion:'19'" badging.txt
           # armeabi-v7a is the only ABI: any other would be dead weight (or a mismatch) on a 32-bit head unit.
           grep -q "^native-code: 'armeabi-v7a'$" badging.txt
