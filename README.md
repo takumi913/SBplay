@@ -37,6 +37,14 @@
 
 [Issues](https://github.com/takumi913/SBplay/issues)。
 
+## 赞赏支持
+
+如果 SBplay 对你有帮助，欢迎扫码赞赏，感谢支持与鼓励。
+
+<div align="center">
+  <img src="docs/mm_reward_qrcode.png" alt="SBplay 赞赏码" width="240">
+</div>
+
 ## 许可
 
 GPL-3.0，见 [LICENSE](LICENSE)。基于 [DiPlay](https://github.com/shihabal3amri/DiPlay) 和 [xcertplay](https://github.com/shilapi/xcertplay)，界面改编自 [DiAuto](https://github.com/shihabal3amri/DiAuto)（AGPL-3.0），第三方许可见 [`docs/THIRD_PARTY_NOTICES.md`](docs/THIRD_PARTY_NOTICES.md)。
