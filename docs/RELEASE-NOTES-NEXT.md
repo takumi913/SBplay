@@ -27,6 +27,16 @@ Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release
 - **必须上机复验**：CI build/tests do not prove that this firmware's AP exposes a
   readable, correctly quoted password or that wireless CarPlay pairs successfully.
 
+## Call microphone diagnosis (CS11)
+
+- The failure-detail page (首页“查看失败详情”, or 设置 → 诊断 → 查看最近错误) now opens with a
+  【通话麦克风诊断】 block: which audio streams iOS set up and whether each asked for the car microphone,
+  whether the microphone opened (and on which source), the captured level (max peak, silent frames),
+  how many packets reached the phone, and one conclusion with the next step.
+- New session-log lines: `Audio: setup`, `Audio: downlink started/stopped`, `Microphone: switches/probe/effects/summary`,
+  and level fields on `Microphone: stats`. No audio, endpoints or keys are logged. Audio behaviour is unchanged.
+- **必须上机复验**: see docs/_digest/105.
+
 ## Microphone uplink (CS11)
 
 - The microphone Opus encoder is now chosen in three steps: Android's MediaCodec Opus encoder (API 29

@@ -347,7 +347,17 @@ class AndroidMediaSink(
         }
     }
 
+    override fun onAudioSetupDiagnostic(line: String) {
+        runCatching { onAudioDiagnostic(line) }
+    }
+
     override fun onAudioStarted(id: AudioStreamId, format: AudioFormat, firstSample: Int) {
+        // The microphone of a call starts on this event (the first downlink packet), so a call whose
+        // downlink never arrives never opens the microphone; this line is how the report shows that.
+        runCatching {
+            onAudioDiagnostic("Audio: downlink started type=${safeAudioType(id.audioType)} stream=${id.type} " +
+                "codec=${format.codec.name} rate=${format.sampleRate} channels=${format.channels}")
+        }
         audioRenderer(id, format).start()
         if (format.audioType == "media") updateMediaAudio(id, true)
         // Downlink audio is the half of a VOIP call the iPhone cannot hide: see [VoiceCallWatch].
@@ -360,7 +370,12 @@ class AndroidMediaSink(
 
     override fun onAudioStopped(id: AudioStreamId) {
         voiceCallWatch.downlinkStopped(id)
-        audioRenderers.remove(id)?.close()
+        audioRenderers.remove(id)?.let { renderer ->
+            renderer.close()
+            runCatching {
+                onAudioDiagnostic("Audio: downlink stopped type=${safeAudioType(id.audioType)} stream=${id.type}")
+            }
+        }
         updateMediaAudio(id, false)
     }
 
@@ -376,6 +391,15 @@ class AndroidMediaSink(
     override fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {
         // This callback runs on the downlink thread; microphone failures must not stop playback.
         try {
+            // Which of the two CS11 telephony switches were on for this capture: the failure-detail page
+            // needs them to say whether a silent call can be blamed on them (they only act on telephony).
+            runCatching {
+                onAudioDiagnostic("Microphone: switches type=${safeAudioType(config.audioType)} " +
+                    "stream=${id.type} codec=${config.codec.name} rate=${config.sampleRate} " +
+                    "mic_effects=${switchText("debug.diplay.mic_effects")} " +
+                    "mic_mode=${switchText("debug.diplay.mic_mode")} " +
+                    "appliesToThisStream=${config.audioType == "telephony"}")
+            }
             // CS11: MODE_IN_COMMUNICATION may hand the capture to a silent vendor input; it can be
             // left alone at runtime with `ADB shell setprop debug.diplay.mic_mode 0`.
             if (config.audioType == "telephony" && debugSwitch("debug.diplay.mic_mode", true)) {
@@ -408,6 +432,12 @@ class AndroidMediaSink(
             restoreAudioMode(id)
         }
     }
+
+    private fun switchText(name: String): String = if (debugSwitch(name, true)) "on" else "off"
+
+    /** iOS names the audio type; only a short lowercase token of it may reach the report. */
+    private fun safeAudioType(raw: String): String =
+        raw.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(24).ifEmpty { "unknown" }
 
     private fun enterCommunicationMode(id: AudioStreamId) {
         val manager = audioManager ?: return

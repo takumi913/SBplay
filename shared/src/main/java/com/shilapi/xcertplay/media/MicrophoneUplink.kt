@@ -54,6 +54,8 @@ internal class MicrophoneUplink(
     @Volatile private var socket: DatagramTransport? = null
     @Volatile private var opusEncoder: MicrophoneOpusEncoder? = null
     @Volatile private var effects: List<AudioEffect> = emptyList()
+    /** What happened to each voice effect this capture tried, for the report (never audio). */
+    private val effectStatus = LinkedHashMap<String, String>()
     private var thread: Thread? = null
 
     fun start(): Boolean {
@@ -116,10 +118,12 @@ internal class MicrophoneUplink(
                     AndroidAudioFormat.ENCODING_PCM_16BIT, bufferSize)
             } catch (error: Exception) {
                 Log.e(TAG, "microphone recorder creation failed source=$candidate", error)
+                stats.probe(candidate, PROBE_CREATE_FAILED)
                 continue
             }
             if (candidateRecorder.state != AudioRecord.STATE_INITIALIZED) {
                 Log.w(TAG, "microphone recorder not initialized source=$candidate state=${candidateRecorder.state}")
+                stats.probe(candidate, PROBE_NOT_INITIALIZED)
                 candidateRecorder.release()
                 continue
             }
@@ -131,6 +135,9 @@ internal class MicrophoneUplink(
                 -1
             }
             Log.i(TAG, "microphone probe source=$candidate rate=${config.sampleRate} result=$read")
+            // The report, not just logcat: which source the car let us open (or that every source was
+            // refused while its own voice assistant held the microphone) decides the next step.
+            stats.probe(candidate, read)
             if (read >= 0) {
                 chosen = candidateRecorder
                 break
@@ -139,6 +146,7 @@ internal class MicrophoneUplink(
             candidateRecorder.release()
         }
         val nextRecorder = chosen
+        val chosenSource = nextRecorder?.audioSource
         if (nextRecorder == null) {
             Log.w(TAG, "microphone unavailable on every source rate=${config.sampleRate}")
             stats.failure(MicrophoneFailureStage.RECORDER_INITIALIZATION)
@@ -176,11 +184,13 @@ internal class MicrophoneUplink(
             // CS11: with the voice effects chain attached the telephony capture returns near-silence
             // (microphone level peak ~5 while the caller hears nothing), so it can be switched off at
             // runtime with `ADB shell setprop debug.diplay.mic_effects 0` for an on-car comparison.
-            if (config.audioType == "telephony" && debugSwitch("debug.diplay.mic_effects", true)) {
+            val effectsSwitch = debugSwitch("debug.diplay.mic_effects", true)
+            if (config.audioType == "telephony" && effectsSwitch) {
                 effects = voiceEffects(nextRecorder.audioSessionId)
             }
+            reportEffects(effectsSwitch)
             nextRecorder.startRecording()
-            stats.started(routeType(nextRecorder))
+            stats.started(routeType(nextRecorder), chosenSource)
             thread = WorkerThreads.create({ capture(nextRecorder, nextSocket) }, "carplay-mic").apply {
                 isDaemon = true
                 start()
@@ -238,18 +248,38 @@ internal class MicrophoneUplink(
                 val status = effect.setEnabled(true)
                 if (status == AudioEffect.SUCCESS && effect.enabled) {
                     Log.i(TAG, "microphone effect=$name enabled=true")
+                    effectStatus[name] = "enabled"
                     return effect
                 }
                 Log.w(TAG, "microphone effect=$name could not be enabled status=$status")
+                effectStatus[name] = "refused$status"
             } else {
                 Log.i(TAG, "microphone effect=$name unavailable")
+                effectStatus[name] = "unavailable"
             }
         } catch (error: RuntimeException) {
             Log.w(TAG, "microphone effect=$name unavailable; continuing without it", error)
+            effectStatus[name] = "failed"
         }
         effect?.let(::releaseEffect)
         return null
     }
+
+    /**
+     * One line saying whether echo cancellation / noise suppression ran on this capture and why.
+     * They only ever run for `telephony`; the switch is `debug.diplay.mic_effects`.
+     */
+    private fun reportEffects(switchOn: Boolean) {
+        val detail = when {
+            config.audioType != "telephony" -> "applied=no reason=not-telephony switch=${onOff(switchOn)}"
+            !switchOn -> "applied=no reason=switch-off switch=off"
+            else -> "applied=yes switch=on " +
+                listOf("AEC", "NS").joinToString(" ") { "${it.lowercase()}=${effectStatus[it] ?: "unknown"}" }
+        }
+        stats.effects(detail)
+    }
+
+    private fun onOff(value: Boolean) = if (value) "on" else "off"
 
     private fun releaseEffect(effect: AudioEffect) {
         try {
@@ -294,7 +324,9 @@ internal class MicrophoneUplink(
                         sendFrame(socket, counters, frame)
                         // A silent capture (routing or effect chain) otherwise looks identical to a
                         // working one in the byte counters, so report the level once per second.
-                        levelPeak = maxOf(levelPeak, peakOf(frame))
+                        val framePeak = peakOf(frame)
+                        stats.level(framePeak)
+                        levelPeak = maxOf(levelPeak, framePeak)
                         if (++levelFrames >= LEVEL_FRAMES_PER_LOG) {
                             Log.i(TAG, "microphone level peak=$levelPeak frames=$levelFrames")
                             levelPeak = 0
@@ -312,6 +344,7 @@ internal class MicrophoneUplink(
             }
         } finally {
             stats.flush(ended = true, routeType = routeInfo)
+            stats.finish()
             running.set(false)
             release()
         }
@@ -415,5 +448,8 @@ internal class MicrophoneUplink(
         /** 20 ms frames per level report (one second at 48 kHz). */
         const val LEVEL_FRAMES_PER_LOG = 50
         const val CLOSE_JOIN_MILLIS = 500L
+        /** Probe results that are not AudioRecord codes: the recorder could not be built or initialized. */
+        const val PROBE_CREATE_FAILED = -1000
+        const val PROBE_NOT_INITIALIZED = -1001
     }
 }

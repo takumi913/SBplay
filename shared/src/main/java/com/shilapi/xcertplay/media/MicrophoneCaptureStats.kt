@@ -29,9 +29,61 @@ internal class MicrophoneCaptureStats(
     private var sendGapMaxNs = 0L
     private var routedDeviceType: Int? = null
 
-    fun started(routeType: Int?) {
+    // Level of the captured PCM, per window and for the whole capture. Byte counters alone cannot tell a
+    // microphone that records speech from one that records silence (measured 2026-10-08: the car's
+    // telephony capture peaked at 5 while the bench peaked between 5000 and 18800), and the app's own
+    // Log.i never reaches this ROM's logcat, so the level has to travel in the report.
+    private var frames = 0L
+    private var silentFrames = 0L
+    private var peakMax = 0
+    private val startedNs = windowStart
+    private var totalFrames = 0L
+    private var totalSilentFrames = 0L
+    private var totalPeakMax = 0
+    private var totalCapturedBytes = 0L
+    private var totalUdpSent = 0L
+    private var totalSendErrors = 0L
+    private var totalReadErrors = 0L
+    private var totalEmptyEncodedFrames = 0L
+
+    fun started(routeType: Int?, actualSource: Int? = null) {
         routedDeviceType = routeType
-        emit("Microphone: start $metadata routedDeviceType=${routeType ?: "unknown"}")
+        emit("Microphone: start $metadata routedDeviceType=${routeType ?: "unknown"}" +
+            (actualSource?.let { " actualSource=${sourceName(it)}" } ?: ""))
+    }
+
+    /** One recorder candidate of the source ladder and what its first read returned. */
+    fun probe(source: Int, result: Int) {
+        emit("Microphone: probe $metadata candidate=${sourceName(source)} result=$result")
+    }
+
+    /** Whether the voice effects ran on this capture; [detail] is a fixed vocabulary built by the uplink. */
+    fun effects(detail: String) {
+        emit("Microphone: effects $metadata $detail")
+    }
+
+    /** Highest absolute sample of one 16-bit PCM frame, as measured by the capture thread. */
+    fun level(peak: Int) {
+        frames++
+        totalFrames++
+        if (peak < SILENT_PEAK) {
+            silentFrames++
+            totalSilentFrames++
+        }
+        if (peak > peakMax) peakMax = peak
+        if (peak > totalPeakMax) totalPeakMax = peak
+    }
+
+    /**
+     * One line for the whole capture, written when it ends: the failure-detail page reads this to
+     * say whether the car recorded sound and whether it reached the phone.
+     */
+    fun finish() {
+        val seconds = (nowNs() - startedNs).coerceAtLeast(0) / 1_000_000_000L
+        emit("Microphone: summary $metadata seconds=$seconds captureBytes=$totalCapturedBytes " +
+            "frames=$totalFrames silentFrames=$totalSilentFrames peakMax=$totalPeakMax " +
+            "readErrors=$totalReadErrors emptyEncodedFrames=$totalEmptyEncodedFrames " +
+            "udpSent=$totalUdpSent sendErrors=$totalSendErrors")
     }
 
     fun reading() { readStart = nowNs() }
@@ -40,15 +92,16 @@ internal class MicrophoneCaptureStats(
         reads++
         readMaxNs = maxOf(readMaxNs, (nowNs() - readStart).coerceAtLeast(0))
         when {
-            count > 0 -> capturedBytes += count
+            count > 0 -> { capturedBytes += count; totalCapturedBytes += count }
             count == 0 -> zeroReads++
-            else -> readErrors++
+            else -> { readErrors++; totalReadErrors++ }
         }
     }
 
     fun encoded(frameCount: Int, emptyCount: Int) {
         encodedFrames += frameCount.coerceAtLeast(0)
         emptyEncodedFrames += emptyCount.coerceAtLeast(0)
+        totalEmptyEncodedFrames += emptyCount.coerceAtLeast(0)
     }
 
     fun sent() {
@@ -56,9 +109,10 @@ internal class MicrophoneCaptureStats(
         lastSentNs?.let { sendGapMaxNs = maxOf(sendGapMaxNs, (now - it).coerceAtLeast(0)) }
         lastSentNs = now
         udpSent++
+        totalUdpSent++
     }
 
-    fun sendFailed() { sendErrors++ }
+    fun sendFailed() { sendErrors++; totalSendErrors++ }
 
     fun failure(stage: MicrophoneFailureStage, error: Throwable? = null, code: Int? = null) {
         emit(failureMessage(metadata, stage, error, code))
@@ -72,7 +126,8 @@ internal class MicrophoneCaptureStats(
             "captureBytes=$capturedBytes reads=$reads zeroReads=$zeroReads readErrors=$readErrors " +
             "readMaxMs=${readMaxNs / 1_000_000} encodedFrames=$encodedFrames " +
             "emptyEncodedFrames=$emptyEncodedFrames udpSent=$udpSent sendErrors=$sendErrors " +
-            "sendGapMaxMs=${sendGapMaxNs / 1_000_000} ended=$ended")
+            "sendGapMaxMs=${sendGapMaxNs / 1_000_000} frames=$frames silentFrames=$silentFrames " +
+            "peakMax=$peakMax ended=$ended")
         windowStart = now
         capturedBytes = 0
         reads = 0
@@ -84,6 +139,9 @@ internal class MicrophoneCaptureStats(
         udpSent = 0
         sendErrors = 0
         sendGapMaxNs = 0
+        frames = 0
+        silentFrames = 0
+        peakMax = 0
     }
 
     private fun emit(message: String) { runCatching { report(message) } }
@@ -91,10 +149,29 @@ internal class MicrophoneCaptureStats(
     companion object {
         private const val REPORT_INTERVAL_NS = 5_000_000_000L
 
+        /**
+         * A 16-bit frame whose loudest sample stays under this is counted as silent (about -54 dBFS).
+         * Speech near a car microphone peaks in the thousands; the silent CS11 capture peaked at 5.
+         */
+        const val SILENT_PEAK = 64
+
+        /** The AudioSource constant as a name; numbers outside the ladder stay numbers. */
+        fun sourceName(source: Int): String = when (source) {
+            0 -> "DEFAULT"
+            1 -> "MIC"
+            6 -> "VOICE_RECOGNITION"
+            7 -> "VOICE_COMMUNICATION"
+            else -> "source$source"
+        }
+
         private fun metadata(config: MicrophoneConfig): String {
             val (type, source) = when (config.audioType) {
                 "telephony" -> "telephony" to "VOICE_COMMUNICATION"
                 "speechrecognition" -> "speechrecognition" to "VOICE_RECOGNITION"
+                // Named, not "other": which of these a WeChat call arrives on is still open
+                // (VoiceCallWatch), and the failure-detail page has to tell them apart.
+                "default" -> "default" to "MIC"
+                "compatibility" -> "compatibility" to "MIC"
                 else -> "other" to "MIC"
             }
             return "type=$type source=$source codec=${config.codec.name} " +

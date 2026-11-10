@@ -46,6 +46,47 @@ class MicrophoneCaptureStatsTest {
         assertTrue(final.endsWith("ended=true"))
     }
 
+    @Test fun levelIsReportedPerWindowAndInTheFinalSummary() {
+        var now = 0L
+        val reports = mutableListOf<String>()
+        val stats = MicrophoneCaptureStats(config, reports::add) { now }
+        stats.probe(6, -3)
+        stats.probe(7, 2048)
+        stats.started(15, actualSource = 7)
+        stats.level(5)
+        stats.level(12_000)
+        stats.read(1920)
+        stats.sent()
+        now = 5_000_000_000
+        stats.flush()
+        stats.level(3)
+        stats.sent()
+        stats.sendFailed()
+        now = 7_000_000_000
+        stats.flush(ended = true)
+        stats.finish()
+
+        assertTrue(reports[0].endsWith("candidate=VOICE_RECOGNITION result=-3"))
+        assertTrue(reports[1].endsWith("candidate=VOICE_COMMUNICATION result=2048"))
+        assertTrue(reports[2].endsWith("actualSource=VOICE_COMMUNICATION"))
+        assertTrue(reports[3], reports[3].contains("frames=2 silentFrames=1 peakMax=12000 ended=false"))
+        // The window resets; the summary keeps the whole capture.
+        assertTrue(reports[4], reports[4].contains("frames=1 silentFrames=1 peakMax=3 ended=true"))
+        val summary = reports[5]
+        assertTrue(summary, summary.startsWith("Microphone: summary type=telephony source=VOICE_COMMUNICATION"))
+        assertTrue(summary, summary.contains("seconds=7 captureBytes=1920 frames=3 silentFrames=2 peakMax=12000"))
+        assertTrue(summary, summary.endsWith("udpSent=2 sendErrors=1"))
+        assertTrue(reports.all { it.length < 512 && '\n' !in it && !it.contains("port=") && !it.contains("key=") })
+    }
+
+    @Test fun defaultAndCompatibilityStreamsAreNamedInTheReport() {
+        val reports = mutableListOf<String>()
+        MicrophoneCaptureStats(config.copy(audioType = "default"), reports::add) { 0 }.started(null)
+        MicrophoneCaptureStats(config.copy(audioType = "compatibility"), reports::add) { 0 }.started(null)
+        assertTrue(reports[0].startsWith("Microphone: start type=default source=MIC"))
+        assertTrue(reports[1].startsWith("Microphone: start type=compatibility source=MIC"))
+    }
+
     @Test fun reportingIsBoundedAndRouteQueriesRunOnlyWhenDue() {
         var now = 0L
         var reports = 0

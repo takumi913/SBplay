@@ -43,6 +43,8 @@ interface MediaSink {
     fun onAudioRtp(id: AudioStreamId, format: AudioFormat, rtp: ByteArray, sample: Int) {}
     fun onAudioStopped(id: AudioStreamId) {}
     fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {}
+    /** One line per audio stream SETUP saying whether a microphone was planned for it, and why not. */
+    fun onAudioSetupDiagnostic(line: String) {}
     fun onMicrophoneStopped(id: AudioStreamId) {}
     fun onIapMessage(bytes: ByteArray) {}
 }
@@ -210,8 +212,10 @@ class CarPlayMediaEngine(
         val connectionId = stream["streamConnectionID"]
         val latencyMs = (stream["audioLatencyMs"] as? Number)?.toInt() ?: 0
         val meta = AudioMeta(type, format, connectionId, latencyMs)
-        val microphone = microphoneConfig(session, type, stream, format)
+        var microphoneSkip = "none"
+        val microphone = microphoneConfig(session, type, stream, format) { microphoneSkip = it }
         if (microphone != null) pendingMicrophone[streamKey] = microphone
+        reportAudioSetup(type, audioType, format, stream, microphone, microphoneSkip)
 
         val capture = audioCaptureDirectory?.let { AudioPacketCapture(it, type) }
         if (capture != null) audioCaptures[streamKey] = capture
@@ -585,18 +589,52 @@ class CarPlayMediaEngine(
         return dataStreamKey(session, stream, DATASTREAM_OUTPUT_KEY)
     }
 
+    /**
+     * The report line for one audio SETUP. Whether iOS asked for the car's microphone on this stream
+     * is the first question when a call is silent, and before this line it only reached logcat, which
+     * this ROM does not show for the app. Values are closed tokens: no port, address or key.
+     */
+    private fun reportAudioSetup(
+        type: Int,
+        audioType: String,
+        format: AudioFormat,
+        stream: Map<String, Any?>,
+        microphone: MicrophoneConfig?,
+        skip: String,
+    ) {
+        val input = when (val raw = stream["input"]) {
+            is Boolean -> raw.toString()
+            is Number -> (raw.toInt() != 0).toString()
+            null -> "absent"
+            else -> "other"
+        }
+        val dataPort = if (((stream["dataPort"] as? Number)?.toInt() ?: 0) in 1..65535) "yes" else "no"
+        val formatBits = (stream["audioFormat"] as? Number)?.toLong() ?: 0L
+        val safeType = audioType.filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(24).ifEmpty { "unknown" }
+        val mic = if (microphone != null) "planned" else "skipped reason=$skip"
+        runCatching {
+            sink.onAudioSetupDiagnostic(
+                "Audio: setup type=$safeType stream=$type codec=${format.codec.name} rate=${format.sampleRate} " +
+                    "channels=${format.channels} formatBits=0x${java.lang.Long.toHexString(formatBits)} " +
+                    "input=$input dataPort=$dataPort mic=$mic",
+            )
+        }
+    }
+
     private fun microphoneConfig(
         session: AirPlaySession,
         type: Int,
         stream: Map<String, Any?>,
         format: AudioFormat,
+        skipped: (String) -> Unit = {},
     ): MicrophoneConfig? {
-        if (!microphoneEnabled || type != STREAM_TYPE_MAIN_AUDIO) return null
-        if (!wantsMicrophone(format.audioType, stream)) return null
-        val port = (stream["dataPort"] as? Number)?.toInt() ?: return null
-        if (port !in 1..65535) return null
-        val host = session.remoteAddress ?: return null
-        val key = dataStreamKey(session, stream, DATASTREAM_INPUT_KEY) ?: return null
+        if (!microphoneEnabled) return null.also { skipped("mic-disabled") }
+        if (type != STREAM_TYPE_MAIN_AUDIO) return null.also { skipped("not-main-audio") }
+        if (!wantsMicrophone(format.audioType, stream)) return null.also { skipped("no-input-requested") }
+        val port = (stream["dataPort"] as? Number)?.toInt() ?: return null.also { skipped("no-data-port") }
+        if (port !in 1..65535) return null.also { skipped("bad-data-port") }
+        val host = session.remoteAddress ?: return null.also { skipped("no-peer-address") }
+        val key = dataStreamKey(session, stream, DATASTREAM_INPUT_KEY) ?: return null.also { skipped("no-stream-secret") }
         val formatBits = (stream["audioFormat"] as? Number)?.toLong() ?: 0L
         val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0
         val preferredMillis = if (format.codec == AudioCodecKind.OPUS) {

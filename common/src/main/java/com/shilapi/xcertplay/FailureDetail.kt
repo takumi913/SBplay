@@ -103,8 +103,12 @@ internal object FailureDetail {
         val device = "Android ${Build.VERSION.RELEASE ?: "?"} · ${Build.MODEL ?: "?"}"
         val hasCrash = CrashDiagnostics.hasCrash(context)
         val crashDetails = CrashDiagnostics.displayLines(context, attempt, outcome)
+        // 麦克风段只读同一批已脱敏的行；出错也不能让整页打不开。
+        val microphone = runCatching { MicrophoneDiagnosis.section(details) }
+            .getOrElse { listOf("【通话麦克风诊断】生成失败：${it.javaClass.simpleName}") }
         return summary(outcome, appVersion, device, hasCrash = hasCrash) +
             crashDetails +
+            microphone +
             "—— 最近一次连接的完整日志（${details.size} 行，仅限已保留的日志文件）——" +
             details.ifEmpty { listOf("（没有找到日志：可能还没有连接过，或日志已被清除）") }
     }
