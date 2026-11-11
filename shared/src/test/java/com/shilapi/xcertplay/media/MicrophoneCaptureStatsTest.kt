@@ -69,9 +69,9 @@ class MicrophoneCaptureStatsTest {
         assertTrue(reports[0].endsWith("candidate=VOICE_RECOGNITION result=-3"))
         assertTrue(reports[1].endsWith("candidate=VOICE_COMMUNICATION result=2048"))
         assertTrue(reports[2].endsWith("actualSource=VOICE_COMMUNICATION"))
-        assertTrue(reports[3], reports[3].contains("frames=2 silentFrames=1 peakMax=12000 ended=false"))
+        assertTrue(reports[3], reports[3].contains("frames=2 silentFrames=1 peakMax=12000 zeroFrames=0 meanAbs=0 ended=false"))
         // The window resets; the summary keeps the whole capture.
-        assertTrue(reports[4], reports[4].contains("frames=1 silentFrames=1 peakMax=3 ended=true"))
+        assertTrue(reports[4], reports[4].contains("frames=1 silentFrames=1 peakMax=3 zeroFrames=0 meanAbs=0 ended=true"))
         val summary = reports[5]
         assertTrue(summary, summary.startsWith("Microphone: summary type=telephony source=VOICE_COMMUNICATION"))
         assertTrue(summary, summary.contains("seconds=7 captureBytes=1920 frames=3 silentFrames=2 peakMax=12000"))
@@ -148,5 +148,47 @@ class MicrophoneCaptureStatsTest {
         }
         assertEquals(4, reports.size)
         assertTrue(reports.all { it.length < 512 && '\n' !in it })
+    }
+
+    @Test fun summaryTellsDigitalSilenceFromNoiseAndWhenSoundFirstArrived() {
+        var now = 0L
+        val reports = mutableListOf<String>()
+        val stats = MicrophoneCaptureStats(config, reports::add) { now }
+        stats.started(null, actualSource = 7)
+        stats.level(0, 0, 960)
+        stats.level(0, 0, 960)
+        now = 1_500_000_000
+        stats.level(4000, 960_000, 960)
+        stats.encoded(1, 0, 3)
+        stats.encoded(1, 0, 61)
+        stats.encoded(0, 1, 0)
+        now = 5_000_000_000
+        stats.flush(ended = true)
+        stats.finish("closed")
+        val window = reports[reports.size - 2]
+        assertTrue(window, window.contains("peakMax=4000 zeroFrames=2 meanAbs=333 ended=true"))
+        val summary = reports.last()
+        assertTrue(summary, summary.contains("zeroFrames=2 loudFrames=1 meanAbs=333 firstSoundMs=1500"))
+        assertTrue(summary, summary.contains("encodedBytes=64 avgPacketBytes=32 endedBy=closed"))
+        assertTrue(summary, summary.length < 512)
+    }
+
+    @Test fun summaryOfACaptureThatNeverHeardAnythingSaysNever() {
+        val reports = mutableListOf<String>()
+        val stats = MicrophoneCaptureStats(config, reports::add) { 0 }
+        stats.level(5)
+        stats.finish()
+        assertTrue(reports.last(), reports.last().contains("firstSoundMs=never"))
+        assertTrue(reports.last(), reports.last().contains("endedBy=unknown"))
+    }
+
+    @Test fun probeAndNoteLinesCarryOnlyNumbers() {
+        val reports = mutableListOf<String>()
+        val stats = MicrophoneCaptureStats(config, reports::add) { 0 }
+        stats.probe(7, 2048, 17)
+        stats.note("recorder", "recordingState=3 actualRate=48000")
+        assertTrue(reports[0], reports[0].endsWith("candidate=VOICE_COMMUNICATION result=2048 probePeak=17"))
+        assertTrue(reports[1], reports[1].startsWith("Microphone: recorder type=telephony source=VOICE_COMMUNICATION"))
+        assertTrue(reports[1], reports[1].endsWith("recordingState=3 actualRate=48000"))
     }
 }

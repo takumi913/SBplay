@@ -108,4 +108,49 @@ class MicrophoneDiagnosisTest {
     @Test fun anEmptyLogStillGivesAConclusion() {
         assertTrue(conclusion(emptyList()).contains("没有任何音频流记录"))
     }
+
+    @Test fun setupFieldsAndDeclinedLinesAreNotCountedAsStreams() {
+        val lines = listOf(
+            telephonySetup,
+            "10:00:00.001  Audio: setup fields type=telephony stream=100 framesPerPacket=0 latencyMs=0 keys=audioFormat,input",
+            "10:00:00.002  Audio: setup declined type=media stream=100 reason=no-output-key",
+        )
+        val section = MicrophoneDiagnosis.section(lines)
+        assertTrue(section.joinToString("\n"), section.contains("iPhone 建立的音频流（最近 1 路）："))
+        assertTrue(section.joinToString("\n"), section.any { it.contains("1 路音频 SETUP 被拒") })
+    }
+
+    @Test fun onlyDeclinedSetupsSayTheCarRefusedTheStream() {
+        val text = conclusion(listOf("10:00:00.002  Audio: setup declined type=telephony stream=100 reason=no-output-key"))
+        assertTrue(text, text.contains("被车机拒绝（no-output-key）"))
+    }
+
+    @Test fun systemMicrophoneMuteIsNamedAsTheCause() {
+        val lines = call(peak = 0) +
+            "10:00:01.005  Audio: state when=mic-running type=telephony stream=100 mode=3 micMute=true speaker=false " +
+            "scoOn=false scoOffCall=false a2dpOn=false wiredHeadset=false musicActive=false voiceVolume=5/7 ringer=2 activeUplinks=1"
+        assertTrue(conclusion(lines), conclusion(lines).contains("micMute=true"))
+        assertTrue(next(lines), next(lines).contains("setMicrophoneMute"))
+        assertTrue(MicrophoneDiagnosis.section(lines).any { it.contains("系统麦克风静音=true") })
+    }
+
+    @Test fun allZeroFramesAreCalledDigitalSilence() {
+        val lines = call(peak = 0).map {
+            if (it.contains("Microphone: summary")) it.replace("peakMax=0", "peakMax=0 zeroFrames=1500 meanAbs=0 firstSoundMs=never") else it
+        }
+        assertTrue(conclusion(lines), conclusion(lines).contains("数字静音"))
+        assertTrue(MicrophoneDiagnosis.section(lines).any { it.contains("从未出现声音") })
+    }
+
+    @Test fun aLongCallKeepsItsSetupLinesInTheRawList() {
+        val stats = (1..300).map {
+            "10:01:00.000  Microphone: stats type=telephony $meta routedDeviceType=unknown captureBytes=480000 reads=250 " +
+                "zeroReads=0 readErrors=0 readMaxMs=21 encodedFrames=250 emptyEncodedFrames=0 udpSent=250 sendErrors=0 " +
+                "sendGapMaxMs=25 frames=250 silentFrames=250 peakMax=5 zeroFrames=0 meanAbs=1 ended=false"
+        }
+        val lines = call(peak = 5).let { it.take(6) + stats + it.drop(6) }
+        val section = MicrophoneDiagnosis.section(lines)
+        assertTrue(section.any { it == telephonySetup })
+        assertTrue(section.size < 200)
+    }
 }

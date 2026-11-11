@@ -193,10 +193,20 @@ class CarPlayMediaEngine(
         streams.remove(streamKey)?.close()
         audioMeta.remove(streamKey)
         audioCaptures.remove(streamKey)?.close()
-        if (pendingMicrophone.remove(streamKey) != null) sink.onMicrophoneStopped(streamId)
+        if (pendingMicrophone.remove(streamKey) != null) {
+            reportMicrophoneStop(streamId, "resetup")
+            sink.onMicrophoneStopped(streamId)
+        }
         sink.onAudioStopped(streamId)
 
-        val key = outputKey(session, stream) ?: return null
+        val key = outputKey(session, stream) ?: run {
+            // Debug (silent-call hunt): a declined SETUP never reached the `Audio: setup` line below.
+            runCatching {
+                sink.onAudioSetupDiagnostic("Audio: setup declined type=${safeToken(audioType)} stream=$type " +
+                    "reason=no-output-key")
+            }
+            return null
+        }
         val format = AudioStreamCodec.fromFormatBits(
             (stream["audioFormat"] as? Number)?.toLong() ?: 0L,
             type,
@@ -504,7 +514,10 @@ class CarPlayMediaEngine(
         val tornDown = streams.keys.filter { it.session === session && it.type == type }
         tornDown.forEach { key ->
             val streamId = AudioStreamId(key.type, key.audioType)
-            if (pendingMicrophone.remove(key) != null) sink.onMicrophoneStopped(streamId)
+            if (pendingMicrophone.remove(key) != null) {
+                reportMicrophoneStop(streamId, "teardown")
+                sink.onMicrophoneStopped(streamId)
+            }
             audioMeta.remove(key)
             audioCaptures.remove(key)?.close()
             // BufferedAudioStream owns serialized sink cleanup; stopping it first from here
@@ -530,7 +543,10 @@ class CarPlayMediaEngine(
             audioCaptures.keys.asSequence()).distinct().filter { it.session === session }
         sessionKeys.forEach { key ->
             audioMeta.remove(key)
-            pendingMicrophone.remove(key)
+            // Debug: the uplink is not stopped here (the sink's close() does it); the line says so.
+            if (pendingMicrophone.remove(key) != null) {
+                reportMicrophoneStop(AudioStreamId(key.type, key.audioType), "session-closed")
+            }
             audioCaptures.remove(key)?.close()
         }
     }
@@ -610,16 +626,39 @@ class CarPlayMediaEngine(
         }
         val dataPort = if (((stream["dataPort"] as? Number)?.toInt() ?: 0) in 1..65535) "yes" else "no"
         val formatBits = (stream["audioFormat"] as? Number)?.toLong() ?: 0L
-        val safeType = audioType.filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(24).ifEmpty { "unknown" }
+        val safeType = safeToken(audioType)
         val mic = if (microphone != null) "planned" else "skipped reason=$skip"
+        // Debug (silent-call hunt): the names (never values) of what iOS put in this SETUP, so a field this
+        // code does not read yet (an input format, a latency) can be spotted from one report.
+        val keys = stream.keys.asSequence()
+            .map { it.filter { c -> c.isLetterOrDigit() }.take(32) }
+            .filter { it.isNotEmpty() && !UNSAFE_KEY_NAME.containsMatchIn(it) }
+            .sorted().take(24).joinToString(",")
+        val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0
+        val latency = (stream["audioLatencyMs"] as? Number)?.toInt() ?: 0
         runCatching {
             sink.onAudioSetupDiagnostic(
                 "Audio: setup type=$safeType stream=$type codec=${format.codec.name} rate=${format.sampleRate} " +
                     "channels=${format.channels} formatBits=0x${java.lang.Long.toHexString(formatBits)} " +
                     "input=$input dataPort=$dataPort mic=$mic",
             )
+            sink.onAudioSetupDiagnostic(
+                "Audio: setup fields type=$safeType stream=$type framesPerPacket=$framesPerPacket " +
+                    "latencyMs=$latency keys=$keys",
+            )
         }
     }
+
+    /** Debug: why the engine asked the sink to stop a stream's microphone. */
+    private fun reportMicrophoneStop(id: AudioStreamId, reason: String) {
+        runCatching {
+            sink.onAudioSetupDiagnostic("Microphone: stop requested type=${safeToken(id.audioType)} " +
+                "stream=${id.type} reason=$reason")
+        }
+    }
+
+    private fun safeToken(raw: String): String =
+        raw.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(24).ifEmpty { "unknown" }
 
     private fun microphoneConfig(
         session: AirPlaySession,
@@ -714,6 +753,8 @@ class CarPlayMediaEngine(
         }
 
         private const val TAG = "xcertplay-usb"
+        /** SETUP key names that could look like secrets to the report redactor (which drops such lines). */
+        private val UNSAFE_KEY_NAME = Regex("(?i)pass|token|secret|ssid|name|cert|record|payload|hex|body")
         const val STREAM_TYPE_MAIN_SCREEN = 110
         const val STREAM_TYPE_ALT_SCREEN = 111
         const val STREAM_TYPE_MAIN_AUDIO = 100

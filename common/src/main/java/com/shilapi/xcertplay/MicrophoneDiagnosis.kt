@@ -15,7 +15,10 @@ package com.shilapi.xcertplay
 internal object MicrophoneDiagnosis {
     /** 整段采集的最大音量低于这个值，就当作“录到的是静音”。车上实测静音 5，正常说话几千。 */
     const val QUIET_PEAK = 300
-    private const val MAX_RAW_LINES = 80
+    private const val MAX_RAW_LINES = 120
+    /** When the raw list is too long, the periodic `stats` lines are the ones thinned out. */
+    private const val STATS_HEAD = 6
+    private const val STATS_TAIL = 20
 
     private val CALL_TYPES = listOf("telephony", "default", "compatibility", "other")
 
@@ -33,10 +36,18 @@ internal object MicrophoneDiagnosis {
         val udpSent: Long,
         val sendErrors: Long,
         val emptyEncodedFrames: Long,
+        val zeroFrames: Long? = null,
+        val meanAbs: Long? = null,
+        val firstSoundMs: String? = null,
+        val endedBy: String? = null,
+        val avgPacketBytes: Long? = null,
     )
 
     fun section(lines: List<String>): List<String> {
-        val setups = lines.filter { it.contains("Audio: setup ") }
+        val setups = lines.filter { it.contains("Audio: setup type=") }
+        val declined = lines.filter { it.contains("Audio: setup declined ") }
+        val states = lines.filter { it.contains("Audio: state ") }
+        val encoderErrors = lines.filter { it.contains("Microphone: encoder error ") }
         val downlinks = lines.filter { it.contains("Audio: downlink started ") }
         val failures = lines.filter { it.contains("Microphone: failure ") }
         val effects = lines.filter { it.contains("Microphone: effects ") }
@@ -54,23 +65,45 @@ internal object MicrophoneDiagnosis {
             out += "· 第 ${index + 1} 次开麦：" + describeCapture(capture, totals(capture))
         }
 
-        val (conclusion, next) = verdict(setups, downlinks, failures, effects, switches, modeEntered, hfpOn, captures)
+        states.lastOrNull()?.let { out += "· 最近一次系统音频状态：" + describeState(it) }
+        if (declined.isNotEmpty()) out += "· 有 ${declined.size} 路音频 SETUP 被拒（见下方 Audio: setup declined）"
+        if (encoderErrors.isNotEmpty()) out += "· Opus 编码出错 ${encoderErrors.size} 次（见下方 Microphone: encoder error）"
+
+        val (conclusion, next) = verdict(setups, downlinks, failures, effects, switches, modeEntered, hfpOn, captures, states, declined)
         out += "结论：$conclusion"
         next?.let { out += "下一步：$it" }
 
         val raw = lines.filter { line ->
             line.contains("Audio: setup ") || line.contains("Audio: downlink ") ||
                 line.contains("Microphone: ") || line.contains("Audio: mode ") ||
+                line.contains("Audio: state ") ||
                 line.contains("Call: ") || line.contains("hfp=")
         }
         if (raw.isNotEmpty()) {
-            val shown = raw.takeLast(MAX_RAW_LINES)
+            val shown = thin(raw)
             out += "—— 麦克风相关日志（${raw.size} 行" +
                 (if (raw.size > shown.size) "，只列最近 ${shown.size} 行" else "") + "）——"
             out += shown
         }
         return out
     }
+
+    /**
+     * Keeps every line that says something happened, and thins only the five-second `stats` lines (the
+     * first few and the last ones stay), so a long call cannot push the SETUP lines out of the list.
+     */
+    private fun thin(raw: List<String>): List<String> {
+        if (raw.size <= MAX_RAW_LINES) return raw
+        val statsIndices = raw.indices.filter { raw[it].contains("Microphone: stats ") }
+        val keepStats = (statsIndices.take(STATS_HEAD) + statsIndices.takeLast(STATS_TAIL)).toSet()
+        val kept = raw.indices.filter { it !in statsIndices || it in keepStats }.map { raw[it] }
+        return kept.takeLast(MAX_RAW_LINES)
+    }
+
+    private fun describeState(line: String): String =
+        "时机 ${field(line, "when") ?: "?"}，mode=${field(line, "mode") ?: "?"}，" +
+            "系统麦克风静音=${field(line, "micMute") ?: "?"}，免提=${field(line, "speaker") ?: "?"}，" +
+            "蓝牙SCO=${field(line, "scoOn") ?: "?"}，通话音量=${field(line, "voiceVolume") ?: "?"}"
 
     private fun verdict(
         setups: List<String>,
@@ -81,12 +114,14 @@ internal object MicrophoneDiagnosis {
         modeEntered: Boolean,
         hfpOn: Boolean,
         captures: List<Capture>,
+        states: List<String> = emptyList(),
+        declined: List<String> = emptyList(),
     ): Pair<String, String?> {
         val chosen = captures
             .filter { it.type in CALL_TYPES }
             .ifEmpty { captures }
             .maxByOrNull { totals(it).frames ?: totals(it).captureBytes }
-        if (chosen != null) return captureVerdict(chosen, totals(chosen), effects, switches, modeEntered)
+        if (chosen != null) return captureVerdict(chosen, totals(chosen), effects, switches, modeEntered, states)
 
         failures.lastOrNull()?.let { line ->
             val stage = field(line, "stage") ?: "?"
@@ -116,6 +151,10 @@ internal object MicrophoneDiagnosis {
                 (if (hfpOn) "日志里出现过 hfp=true，印证了这一点。" else "") to
                 "打电话时看车机屏幕是 CarPlay 通话界面还是车机自己的蓝牙电话界面；把这一页拍下来。"
         }
+        if (declined.isNotEmpty()) {
+            return "iPhone 建立的音频流被车机拒绝（${field(declined.last(), "reason") ?: "?"}），没有下行也不会开麦。" to
+                "把这一页拍下来发给开发者。"
+        }
         return "这次连接的日志里没有任何音频流记录（连接没走到音频阶段，或 App 版本早于这项诊断）。" to
             "确认已装新版本，连上 CarPlay 后打一通电话，挂断后再打开本页。"
     }
@@ -126,6 +165,7 @@ internal object MicrophoneDiagnosis {
         effects: List<String>,
         switches: List<String>,
         modeEntered: Boolean,
+        states: List<String> = emptyList(),
     ): Pair<String, String?> {
         val photo = "把这一页拍下来发给开发者。"
         if (totals.captureBytes == 0L && (totals.frames ?: 0L) == 0L) {
@@ -144,7 +184,17 @@ internal object MicrophoneDiagnosis {
             return "车机这一端正常：录到了声音（最大音量 $peak）并持续发给了 iPhone（${totals.udpSent} 包，无失败）。" +
                 "对方仍听不到的话，问题在 iPhone 收到之后（解码或格式协商）。" to photo
         }
-        val head = "车机麦克风录到的几乎全是静音（最大音量 $peak，正常说话应在几千以上），但照常发给了 iPhone，所以对方什么都听不到。"
+        val muted = states.any { field(it, "micMute") == "true" }
+        val allZero = totals.zeroFrames != null && totals.frames != null && totals.frames > 0 &&
+            totals.zeroFrames >= totals.frames
+        val head = "车机麦克风录到的几乎全是静音（最大音量 $peak，正常说话应在几千以上），但照常发给了 iPhone，所以对方什么都听不到。" +
+            (if (allZero) "每一帧都是精确的 0（数字静音）：系统给的是一路被静音或没接通的输入，不是麦克风底噪。"
+            else if (totals.zeroFrames != null) "不是全 0（有底噪），说明录音通路是通的，但拾到的不是真实麦克风的声音。" else "") +
+            (if (muted) "日志里系统麦克风静音（micMute=true）处于开启状态，这本身就会让录音全是静音。" else "")
+        if (muted) {
+            return head to "这是系统层面的静音开关（AudioManager.setMicrophoneMute），不是本应用设置的；" +
+                "把这一页拍下来，下一版可以在开麦时强制解除。"
+        }
         if (capture.type != "telephony") {
             return head + "这次走的是 ${capture.type} 类型，两个通话开关对它不生效；" +
                 "静音来自录音输入本身（实际音源 ${capture.actualSource ?: "未知"}），可能是车机语音助手或别的程序占着真实的麦克风输入。" to photo
@@ -214,6 +264,11 @@ internal object MicrophoneDiagnosis {
                 udpSent = long(line, "udpSent") ?: 0,
                 sendErrors = long(line, "sendErrors") ?: 0,
                 emptyEncodedFrames = long(line, "emptyEncodedFrames") ?: 0,
+                zeroFrames = long(line, "zeroFrames"),
+                meanAbs = long(line, "meanAbs"),
+                firstSoundMs = field(line, "firstSoundMs"),
+                endedBy = field(line, "endedBy"),
+                avgPacketBytes = long(line, "avgPacketBytes"),
             )
         }
         val stats = capture.stats
@@ -227,6 +282,7 @@ internal object MicrophoneDiagnosis {
             udpSent = stats.sumOf { long(it, "udpSent") ?: 0 },
             sendErrors = stats.sumOf { long(it, "sendErrors") ?: 0 },
             emptyEncodedFrames = stats.sumOf { long(it, "emptyEncodedFrames") ?: 0 },
+            zeroFrames = if (stats.any { field(it, "zeroFrames") != null }) stats.sumOf { long(it, "zeroFrames") ?: 0 } else null,
         )
     }
 
@@ -248,8 +304,16 @@ internal object MicrophoneDiagnosis {
         } else {
             "采集 ${totals.captureBytes} 字节（无音量信息）"
         }
+        val extra = mutableListOf<String>().apply {
+            totals.zeroFrames?.let { add("全 0 帧 $it") }
+            totals.meanAbs?.let { add("平均幅度 $it") }
+            totals.firstSoundMs?.let { add(if (it == "never") "从未出现声音" else "开麦后 ${it}ms 首次有声") }
+            totals.avgPacketBytes?.let { add("平均每包 ${it} 字节") }
+            totals.endedBy?.let { add("结束原因 $it") }
+        }.joinToString("，")
         return "${capture.type} 实际音源 ${capture.actualSource ?: "未知"} " +
-            "时长约 ${totals.seconds ?: "?"} 秒：$level；发给 iPhone ${totals.udpSent} 包，失败 ${totals.sendErrors} 包" +
+            "时长约 ${totals.seconds ?: "?"} 秒：$level" + (if (extra.isNotEmpty()) "（$extra）" else "") +
+            "；发给 iPhone ${totals.udpSent} 包，失败 ${totals.sendErrors} 包" +
             if (capture.summary == null) "（没有结束记录）" else ""
     }
 

@@ -46,15 +46,38 @@ internal class MicrophoneCaptureStats(
     private var totalReadErrors = 0L
     private var totalEmptyEncodedFrames = 0L
 
+    // Debug detail for the silent-call hunt (2026-11): a peak alone cannot tell a muted input (every sample
+    // exactly 0) from a live but unconnected one (a noise floor of a few counts), nor whether sound ever
+    // arrived later in the call. These are removable once the call microphone is fixed.
+    private var zeroFrames = 0L
+    private var sumAbs = 0L
+    private var samples = 0L
+    private var totalZeroFrames = 0L
+    private var totalLoudFrames = 0L
+    private var totalSumAbs = 0L
+    private var totalSamples = 0L
+    private var firstSoundMs: Long? = null
+    private var totalEncodedBytes = 0L
+    private var totalEncodedBodies = 0L
+
     fun started(routeType: Int?, actualSource: Int? = null) {
         routedDeviceType = routeType
         emit("Microphone: start $metadata routedDeviceType=${routeType ?: "unknown"}" +
             (actualSource?.let { " actualSource=${sourceName(it)}" } ?: ""))
     }
 
-    /** One recorder candidate of the source ladder and what its first read returned. */
-    fun probe(source: Int, result: Int) {
-        emit("Microphone: probe $metadata candidate=${sourceName(source)} result=$result")
+    /** One recorder candidate of the source ladder, what its first read returned, and that read's peak. */
+    fun probe(source: Int, result: Int, peak: Int? = null) {
+        emit("Microphone: probe $metadata candidate=${sourceName(source)} result=$result" +
+            (peak?.let { " probePeak=$it" } ?: ""))
+    }
+
+    /**
+     * A free-form debug line of this capture. [detail] must be built by the uplink from numbers and fixed
+     * tokens only (never an address, port, key or exception message).
+     */
+    fun note(kind: String, detail: String) {
+        emit("Microphone: $kind $metadata $detail")
     }
 
     /** Whether the voice effects ran on this capture; [detail] is a fixed vocabulary built by the uplink. */
@@ -62,13 +85,29 @@ internal class MicrophoneCaptureStats(
         emit("Microphone: effects $metadata $detail")
     }
 
-    /** Highest absolute sample of one 16-bit PCM frame, as measured by the capture thread. */
-    fun level(peak: Int) {
+    /**
+     * Highest absolute sample of one 16-bit PCM frame, as measured by the capture thread, plus the sum of
+     * absolute samples and the sample count of the same frame (0 when the caller does not measure them).
+     */
+    fun level(peak: Int, frameSumAbs: Long = 0, frameSamples: Int = 0) {
         frames++
         totalFrames++
         if (peak < SILENT_PEAK) {
             silentFrames++
             totalSilentFrames++
+        } else if (firstSoundMs == null) {
+            firstSoundMs = (nowNs() - startedNs).coerceAtLeast(0) / 1_000_000L
+        }
+        if (peak == 0) {
+            zeroFrames++
+            totalZeroFrames++
+        }
+        if (peak >= LOUD_PEAK) totalLoudFrames++
+        if (frameSamples > 0) {
+            sumAbs += frameSumAbs
+            samples += frameSamples
+            totalSumAbs += frameSumAbs
+            totalSamples += frameSamples
         }
         if (peak > peakMax) peakMax = peak
         if (peak > totalPeakMax) totalPeakMax = peak
@@ -78,11 +117,15 @@ internal class MicrophoneCaptureStats(
      * One line for the whole capture, written when it ends: the failure-detail page reads this to
      * say whether the car recorded sound and whether it reached the phone.
      */
-    fun finish() {
+    fun finish(endedBy: String = "unknown") {
         val seconds = (nowNs() - startedNs).coerceAtLeast(0) / 1_000_000_000L
+        val avgPacket = if (totalEncodedBodies > 0) totalEncodedBytes / totalEncodedBodies else 0
         emit("Microphone: summary $metadata seconds=$seconds captureBytes=$totalCapturedBytes " +
             "frames=$totalFrames silentFrames=$totalSilentFrames peakMax=$totalPeakMax " +
+            "zeroFrames=$totalZeroFrames loudFrames=$totalLoudFrames meanAbs=${mean(totalSumAbs, totalSamples)} " +
+            "firstSoundMs=${firstSoundMs ?: "never"} " +
             "readErrors=$totalReadErrors emptyEncodedFrames=$totalEmptyEncodedFrames " +
+            "encodedBytes=$totalEncodedBytes avgPacketBytes=$avgPacket endedBy=$endedBy " +
             "udpSent=$totalUdpSent sendErrors=$totalSendErrors")
     }
 
@@ -98,7 +141,10 @@ internal class MicrophoneCaptureStats(
         }
     }
 
-    fun encoded(frameCount: Int, emptyCount: Int) {
+    fun encoded(frameCount: Int, emptyCount: Int, bytes: Long = 0) {
+        val nonEmpty = (frameCount - emptyCount).coerceAtLeast(0)
+        totalEncodedBodies += nonEmpty
+        totalEncodedBytes += bytes.coerceAtLeast(0)
         encodedFrames += frameCount.coerceAtLeast(0)
         emptyEncodedFrames += emptyCount.coerceAtLeast(0)
         totalEmptyEncodedFrames += emptyCount.coerceAtLeast(0)
@@ -127,7 +173,7 @@ internal class MicrophoneCaptureStats(
             "readMaxMs=${readMaxNs / 1_000_000} encodedFrames=$encodedFrames " +
             "emptyEncodedFrames=$emptyEncodedFrames udpSent=$udpSent sendErrors=$sendErrors " +
             "sendGapMaxMs=${sendGapMaxNs / 1_000_000} frames=$frames silentFrames=$silentFrames " +
-            "peakMax=$peakMax ended=$ended")
+            "peakMax=$peakMax zeroFrames=$zeroFrames meanAbs=${mean(sumAbs, samples)} ended=$ended")
         windowStart = now
         capturedBytes = 0
         reads = 0
@@ -142,7 +188,12 @@ internal class MicrophoneCaptureStats(
         frames = 0
         silentFrames = 0
         peakMax = 0
+        zeroFrames = 0
+        sumAbs = 0
+        samples = 0
     }
+
+    private fun mean(sum: Long, count: Long): Long = if (count > 0) sum / count else 0
 
     private fun emit(message: String) { runCatching { report(message) } }
 
@@ -154,6 +205,9 @@ internal class MicrophoneCaptureStats(
          * Speech near a car microphone peaks in the thousands; the silent CS11 capture peaked at 5.
          */
         const val SILENT_PEAK = 64
+
+        /** A frame at or above this peak is counted as clearly loud (speech close to the microphone). */
+        const val LOUD_PEAK = 1000
 
         /** The AudioSource constant as a name; numbers outside the ladder stay numbers. */
         fun sourceName(source: Int): String = when (source) {

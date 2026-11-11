@@ -29,12 +29,21 @@ Earlier upstream DiPlay changes through 0.2.12 are documented in [0.2.12 release
 
 ## Call microphone diagnosis (CS11)
 
-- The failure-detail page (首页“查看失败详情”, or 设置 → 诊断 → 查看最近错误) now opens with a
+- The log pages have one entry now: 设置 → 诊断 → 查看最近日志 (renamed from 查看最近错误, since the page
+  is useful when nothing failed; the page title is 最近日志). The home card's 查看失败详情 button is gone,
+  and the on-screen 调试日志 switch moved from 自动连接 into 诊断.
+- The recent-logs page now opens with a
   【通话麦克风诊断】 block: which audio streams iOS set up and whether each asked for the car microphone,
   whether the microphone opened (and on which source), the captured level (max peak, silent frames),
   how many packets reached the phone, and one conclusion with the next step.
 - New session-log lines: `Audio: setup`, `Audio: downlink started/stopped`, `Microphone: switches/probe/effects/summary`,
   and level fields on `Microphone: stats`. No audio, endpoints or keys are logged. Audio behaviour is unchanged.
+- Debug lines for the silent-call hunt (removable once fixed): `Audio: state` (mode, system mic mute,
+  speaker, SCO, voice volume around each capture), `Audio: setup fields` (SETUP key names) and
+  `Audio: setup declined`, `Microphone: config/recorder` (requested vs granted capture),
+  `Microphone: stop requested reason=`, `Microphone: already running`, `Microphone: encoder error`,
+  `probePeak=` on probes, and `zeroFrames/meanAbs/loudFrames/firstSoundMs/avgPacketBytes/endedBy` on
+  stats and summary, so digital silence (all zeros) can be told from a noise floor.
 - **必须上机复验**: see docs/_digest/105.
 
 ## Microphone uplink (CS11)

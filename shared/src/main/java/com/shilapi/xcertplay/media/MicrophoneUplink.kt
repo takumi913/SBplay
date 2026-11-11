@@ -38,7 +38,16 @@ internal class MicrophoneUplink(
         MicrophoneOpusEncoders.create(
             bitrate = bitrate,
             software = { value ->
-                SoftwareOpusEncoder(value, onError = { message, error -> Log.w(TAG, message, error) })
+                SoftwareOpusEncoder(value, onError = { message, error ->
+                    Log.w(TAG, message, error)
+                    // The report, not just logcat: a silent call whose frames all fail to encode looks
+                    // like "sent nothing" otherwise. Class name and a fixed stage only, never the text.
+                    val stage = if (message.contains("unavailable")) "init" else "encode"
+                    runCatching {
+                        onDiagnostic("Microphone: encoder error type=${config.audioType.take(24).filter { it.isLetterOrDigit() }} " +
+                            "implementation=software stage=$stage error=${error.javaClass.simpleName.take(48)}")
+                    }
+                })
             },
         )
     },
@@ -105,6 +114,11 @@ internal class MicrophoneUplink(
             runCatching { onDiagnostic(message) }
         }
         val bufferSize = maxOf(minBuffer * 2, config.frameBytes * 4)
+        // Debug (silent-call hunt): everything the capture was asked to do, from numbers and fixed tokens.
+        stats.note("config", "frameBytes=${config.frameBytes} payloadType=${config.payloadType} " +
+            "rtpSamples=${config.rtpSamplesPerPacket} opusClock=${config.opusClockRate} " +
+            "bitrate=${config.bitrate ?: "none"} peer=${addressKind(config.host)} " +
+            "minBuffer=$minBuffer bufferSize=$bufferSize requestedSource=${MicrophoneCaptureStats.sourceName(source)}")
         // The car keeps its own always-on voice assistant on the microphone, and this 4.4 audio HAL
         // answers a competing capture with ERROR_INVALID_OPERATION (-3) on the first read. Walk the
         // source ladder and keep the first source that actually returns samples.
@@ -137,7 +151,7 @@ internal class MicrophoneUplink(
             Log.i(TAG, "microphone probe source=$candidate rate=${config.sampleRate} result=$read")
             // The report, not just logcat: which source the car let us open (or that every source was
             // refused while its own voice assistant held the microphone) decides the next step.
-            stats.probe(candidate, read)
+            stats.probe(candidate, read, if (read > 0) peakOf(probe, read) else null)
             if (read >= 0) {
                 chosen = candidateRecorder
                 break
@@ -191,6 +205,13 @@ internal class MicrophoneUplink(
             reportEffects(effectsSwitch)
             nextRecorder.startRecording()
             stats.started(routeType(nextRecorder), chosenSource)
+            // Debug (silent-call hunt): what the HAL actually granted, which can differ from the request.
+            runCatching {
+                stats.note("recorder", "recordingState=${nextRecorder.recordingState} state=${nextRecorder.state} " +
+                    "actualRate=${nextRecorder.sampleRate} actualChannels=${nextRecorder.channelCount} " +
+                    "audioFormat=${nextRecorder.audioFormat} sessionId=${nextRecorder.audioSessionId} " +
+                    "bindAddress=${addressKind(bindAddress)}")
+            }
             thread = WorkerThreads.create({ capture(nextRecorder, nextSocket) }, "carplay-mic").apply {
                 isDaemon = true
                 start()
@@ -205,10 +226,10 @@ internal class MicrophoneUplink(
     }
 
     /** Highest absolute 16-bit sample of one PCM frame; 0 means the capture is silent. */
-    private fun peakOf(frame: ByteArray): Int {
+    private fun peakOf(frame: ByteArray, length: Int = frame.size): Int {
         var peak = 0
         var index = 0
-        while (index + 1 < frame.size) {
+        while (index + 1 < length) {
             val low = frame[index].toInt() and 0xFF
             val high = frame[index + 1].toInt()
             val sample = ((high shl 8) or low).toShort().toInt()
@@ -217,6 +238,30 @@ internal class MicrophoneUplink(
             index += 2
         }
         return peak
+    }
+
+    /** Sum of absolute 16-bit samples of one PCM frame, for the report's mean level. */
+    private fun sumAbsOf(frame: ByteArray): Long {
+        var sum = 0L
+        var index = 0
+        while (index + 1 < frame.size) {
+            val sample = (((frame[index + 1].toInt()) shl 8) or (frame[index].toInt() and 0xFF)).toShort().toInt()
+            sum += if (sample < 0) -sample else sample
+            index += 2
+        }
+        return sum
+    }
+
+    /** The kind of an address only — never the address itself — for the report. */
+    private fun addressKind(address: java.net.InetAddress?): String = when (address) {
+        null -> "none"
+        is java.net.Inet4Address -> if (address.isAnyLocalAddress) "ipv4-any" else "ipv4"
+        is java.net.Inet6Address -> when {
+            address.isAnyLocalAddress -> "ipv6-any"
+            address.isLinkLocalAddress -> if (address.scopeId != 0) "ipv6-linklocal-scoped" else "ipv6-linklocal-unscoped"
+            else -> "ipv6"
+        }
+        else -> "other"
     }
 
     private fun sourceLadder(primary: Int): List<Int> = listOf(
@@ -297,6 +342,7 @@ internal class MicrophoneUplink(
         var filled = 0
         var levelPeak = 0
         var levelFrames = 0
+        var endedBy = "closed"
         try {
             while (running.get()) {
                 stats.reading()
@@ -305,6 +351,7 @@ internal class MicrophoneUplink(
                 stats.read(count)
                 if (count < 0) {
                     if (running.get()) {
+                        endedBy = "read-error"
                         Log.e(TAG, "microphone read failed code=$count")
                         stats.failure(MicrophoneFailureStage.READ, code = count)
                     }
@@ -325,7 +372,7 @@ internal class MicrophoneUplink(
                         // A silent capture (routing or effect chain) otherwise looks identical to a
                         // working one in the byte counters, so report the level once per second.
                         val framePeak = peakOf(frame)
-                        stats.level(framePeak)
+                        stats.level(framePeak, sumAbsOf(frame), frame.size / 2)
                         levelPeak = maxOf(levelPeak, framePeak)
                         if (++levelFrames >= LEVEL_FRAMES_PER_LOG) {
                             Log.i(TAG, "microphone level peak=$levelPeak frames=$levelFrames")
@@ -339,12 +386,13 @@ internal class MicrophoneUplink(
             }
         } catch (error: Exception) {
             if (running.get()) {
+                endedBy = "exception"
                 Log.e(TAG, "microphone capture failed", error)
                 stats.failure(MicrophoneFailureStage.CAPTURE, error)
             }
         } finally {
             stats.flush(ended = true, routeType = routeInfo)
-            stats.finish()
+            stats.finish(endedBy)
             running.set(false)
             release()
         }
@@ -356,7 +404,7 @@ internal class MicrophoneUplink(
         } else {
             listOf(MicrophonePacketizer.toWirePcm(frame))
         }
-        stats.encoded(bodies.size, if (bodies.isEmpty()) 1 else bodies.count { it.isEmpty() })
+        stats.encoded(bodies.size, if (bodies.isEmpty()) 1 else bodies.count { it.isEmpty() }, bodies.sumOf { it.size.toLong() })
         bodies.forEach { body ->
             sendPacket(
                 socket = socket,

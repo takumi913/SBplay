@@ -400,10 +400,18 @@ class AndroidMediaSink(
                     "mic_mode=${switchText("debug.diplay.mic_mode")} " +
                     "appliesToThisStream=${config.audioType == "telephony"}")
             }
+            reportAudioState("mic-requested", id)
             // CS11: MODE_IN_COMMUNICATION may hand the capture to a silent vendor input; it can be
             // left alone at runtime with `ADB shell setprop debug.diplay.mic_mode 0`.
             if (config.audioType == "telephony" && debugSwitch("debug.diplay.mic_mode", true)) {
                 enterCommunicationMode(id)
+            }
+            val existing = microphoneUplinks[id]
+            if (existing != null) {
+                // Debug: a second start for a stream that already records is a no-op; say so.
+                runCatching {
+                    onAudioDiagnostic("Microphone: already running type=${safeAudioType(id.audioType)} stream=${id.type}")
+                }
             }
             val uplink = microphoneUplinks.computeIfAbsent(id) {
                 MicrophoneUplink(config, onAudioDiagnostic, network = network)
@@ -411,7 +419,9 @@ class AndroidMediaSink(
             if (!uplink.start()) {
                 microphoneUplinks.remove(id, uplink)
                 restoreAudioMode(id)
+                reportAudioState("mic-refused", id)
             } else {
+                reportAudioState("mic-running", id)
                 // Only a microphone that is really running counts: a refused capture would otherwise be
                 // half of a "two-way" call the driver is not on (see [VoiceCallWatch]).
                 voiceCallWatch.microphoneStarted(id)
@@ -426,10 +436,35 @@ class AndroidMediaSink(
     override fun onMicrophoneStopped(id: AudioStreamId) {
         // Before the close: the card must go even if the uplink's own teardown throws.
         voiceCallWatch.microphoneStopped(id)
+        if (microphoneUplinks.containsKey(id)) reportAudioState("mic-stopping", id)
         try {
             microphoneUplinks.remove(id)?.close()
         } finally {
             restoreAudioMode(id)
+        }
+    }
+
+    /**
+     * Debug (silent-call hunt, 2026-11): the platform audio state around a capture. `micMute=true` alone
+     * explains a call that records only zeros, and none of these values reached the report before.
+     * Numbers and booleans only; removable once the call microphone is fixed.
+     */
+    private fun reportAudioState(moment: String, id: AudioStreamId) {
+        val manager = audioManager ?: run {
+            runCatching { onAudioDiagnostic("Audio: state when=$moment stream=${id.type} audioManager=none") }
+            return
+        }
+        runCatching {
+            @Suppress("DEPRECATION")
+            val line = "Audio: state when=$moment type=${safeAudioType(id.audioType)} stream=${id.type} " +
+                "mode=${manager.mode} micMute=${manager.isMicrophoneMute} speaker=${manager.isSpeakerphoneOn} " +
+                "scoOn=${manager.isBluetoothScoOn} scoOffCall=${manager.isBluetoothScoAvailableOffCall} " +
+                "a2dpOn=${manager.isBluetoothA2dpOn} wiredHeadset=${manager.isWiredHeadsetOn} " +
+                "musicActive=${manager.isMusicActive} " +
+                "voiceVolume=${manager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/" +
+                "${manager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)} " +
+                "ringer=${manager.ringerMode} activeUplinks=${microphoneUplinks.size}"
+            onAudioDiagnostic(line)
         }
     }
 
