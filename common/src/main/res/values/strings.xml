@@ -640,9 +640,8 @@
     <string name="waiting_first_frame_hint">If the picture never appears, go back to the home page, or disconnect and connect again.</string>
     <string name="waiting_first_frame_home">Home</string>
     <string name="waiting_first_frame_disconnect">Disconnect</string>
-    <string name="view_failure_detail">Failure details</string>
-    <string name="view_recent_errors">View recent errors</string>
-    <string name="failure_detail_title">Failure details</string>
+    <string name="view_recent_logs">View recent logs</string>
+    <string name="failure_detail_title">Recent logs</string>
     <string name="failure_detail_page">Page %1$d/%2$d</string>
     <string name="failure_detail_previous">Previous</string>
     <string name="failure_detail_next">Next</string>

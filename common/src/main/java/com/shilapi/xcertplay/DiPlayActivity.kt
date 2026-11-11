@@ -76,7 +76,6 @@ class DiPlayActivity : ComponentActivity() {
     private var actionTitle: TextView? = null
     private var actionHint: TextView? = null
     /** Opens the failure-detail pages; shown only while a failed, interrupted or no-video attempt is on record. */
-    private var failureDetailButton: View? = null
     private var setupError: String? = null
     private var status: TextView? = null
     private var connectButton: Button? = null
@@ -375,7 +374,7 @@ class DiPlayActivity : ComponentActivity() {
         adbStatus = null
         headerStatusText = null; headerStatusDot = null
         gaugeView = null; gaugeTitle = null; gaugeSubtitle = null; gaugePill = null
-        actionTitle = null; actionHint = null; failureDetailButton = null
+        actionTitle = null; actionHint = null
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -755,20 +754,7 @@ class DiPlayActivity : ComponentActivity() {
         } else {
             buttons.addView(primary, LinearLayout.LayoutParams(dp(170), dp(52)))
         }
-        // In both layouts: a session can end while this page stays open, and the card is not rebuilt then.
-        // The once-a-second refresh toggles its visibility (refreshActionCardText).
-        val details = SettingsWidgets.createButton(
-            context = this,
-            title = getString(R.string.view_failure_detail),
-            style = SettingsWidgets.ButtonStyle.SECONDARY,
-            theme = nightPalette,
-            minHeightDp = 52,
-            textSizeSp = 13f,
-        ) { showFailureDetail() }.apply {
-            visibility = if (lastAttemptOutcome() != null) View.VISIBLE else View.GONE
-        }
-        failureDetailButton = details
-        buttons.addView(details, LinearLayout.LayoutParams(dp(136), dp(52)).apply { leftMargin = dp(10) })
+        // No log button here: the logs live in one place, 诊断 → 查看最近日志 (owner request, 2026-11-11).
         card.addView(buttons, LinearLayout.LayoutParams(-2, -2))
         return card
     }
@@ -1032,12 +1018,10 @@ class DiPlayActivity : ComponentActivity() {
         val outcome = lastAttemptOutcome()
         val titleText = if (outcome == null && CrashDiagnostics.hasCrash(this)) "检测到上次应用异常"
             else actionTitleText(wireless, outcome)
-        val hintText = if (outcome == null && CrashDiagnostics.hasCrash(this)) "点开失败详情可查看 Java 异常与堆栈。"
+        val hintText = if (outcome == null && CrashDiagnostics.hasCrash(this)) "到「诊断」点「查看最近日志」可查看 Java 异常与堆栈。"
             else actionHintText(wireless, outcome)
         if (title.text?.toString() != titleText) title.text = titleText
         if (hint.text?.toString() != hintText) hint.text = hintText
-        val detailsVisibility = if (outcome != null || CrashDiagnostics.hasCrash(this)) View.VISIBLE else View.GONE
-        failureDetailButton?.let { if (it.visibility != detailsVisibility) it.visibility = detailsVisibility }
     }
 
     /**
@@ -1128,7 +1112,7 @@ class DiPlayActivity : ComponentActivity() {
             runCatching {
                 systemService(android.content.ClipboardManager::class.java).setPrimaryClip(
                     android.content.ClipData.newPlainText(
-                        "SBplay failure details page ${index + 1}",
+                        "SBplay recent logs page ${index + 1}",
                         pages[index].joinToString("\n"),
                     ),
                 )
@@ -1352,8 +1336,9 @@ class DiPlayActivity : ComponentActivity() {
             connectionSetupControls(card)
         }
         section(content, getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
-            // The quick look first: no file to save, one photo per page.
-            card.addView(button(getString(R.string.view_recent_errors), false) { showFailureDetail() }, matchButton(10, 60))
+            // The quick look first: no file to save, one photo per page. It is the only way into the log pages:
+            // the home card's button is gone, so every debugging aid sits in this one section.
+            card.addView(button(getString(R.string.view_recent_logs), false) { showFailureDetail() }, matchButton(10, 60))
             exportButton = button(if (exportInProgress) getString(R.string.saving_report) else getString(R.string.save_diagnostic_report), false) {
                 chooseReportDestination()
             }.apply { isEnabled = !exportInProgress }
@@ -1361,6 +1346,16 @@ class DiPlayActivity : ComponentActivity() {
             card.addView(button(getString(R.string.choose_save_location), false) { chooseReportDestination() }, matchButton(10, 60))
             val destination = getString(R.string.choose_where_to_save_your_report)
             card.addView(label(destination + getString(R.string.nothing_is_sent_automatically_protocol_payloads_and_creden), 14, MUTED).apply { setPadding(0, dp(12), 0, 0) })
+            // The on-screen debug log switch, moved here from 自动连接: debugging aids live in 诊断 only.
+            toggle(
+                card,
+                getString(R.string.debug_logs),
+                getString(R.string.show_on_screen_debug_logs),
+                AirPlayPersistence.loadDebugLogsEnabled(this),
+            ) {
+                AirPlayPersistence.saveDebugLogsEnabled(this, it)
+                com.shilapi.xcertplay.diag.DiagLog.update(it)
+            }
         }
         section(content, getString(R.string.automatic_connection), R.drawable.ic_dp_automation) { card ->
             toggle(card, getString(R.string.connect_when_diplay_opens), getString(R.string.use_your_last_connection_type_and_selected_iphone), DiPlayPreferences.autoConnect(this)) { DiPlayPreferences.saveAutoConnect(this, it) }
@@ -1394,17 +1389,6 @@ class DiPlayActivity : ComponentActivity() {
                     !CarHotspotSetup.Permission.BOOT_LAUNCH.granted(this) },
                 permissions = { listOf(CarHotspotSetup.Permission.BOOT_LAUNCH) }) {
                 AirPlayPersistence.saveAutoStartOnBoot(this, it)
-            }
-            // Moved out of the deleted CarPlay panel: the on-screen debug log switch belongs with the other
-            // start-up rows in the connection category.
-            toggle(
-                card,
-                getString(R.string.debug_logs),
-                getString(R.string.show_on_screen_debug_logs),
-                AirPlayPersistence.loadDebugLogsEnabled(this),
-            ) {
-                AirPlayPersistence.saveDebugLogsEnabled(this, it)
-                com.shilapi.xcertplay.diag.DiagLog.update(it)
             }
             val autoConfirmActive = UsbPermissionSetup.Permission.ACCESSIBILITY.granted(this)
             toggle(
