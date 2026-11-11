@@ -213,6 +213,8 @@ class AndroidMediaSink(
     )
     private val audioModeLock = Any()
     private var communicationModeStream: AudioStreamId? = null
+    /** True while this sink has switched the system microphone mute off for its captures. */
+    private var microphoneMuteCleared = false
     private val pendingVideoCodec = ConcurrentHashMap<Int, VideoCodec>()
     private val videoRecoveryHandlers = ConcurrentHashMap<Int, () -> Unit>()
     private val videoDiagnosticHandlers = ConcurrentHashMap<Int, (String) -> Unit>()
@@ -406,6 +408,7 @@ class AndroidMediaSink(
             if (config.audioType == "telephony" && debugSwitch("debug.diplay.mic_mode", true)) {
                 enterCommunicationMode(id)
             }
+            clearMicrophoneMute(id)
             val existing = microphoneUplinks[id]
             if (existing != null) {
                 // Debug: a second start for a stream that already records is a no-op; say so.
@@ -419,6 +422,7 @@ class AndroidMediaSink(
             if (!uplink.start()) {
                 microphoneUplinks.remove(id, uplink)
                 restoreAudioMode(id)
+                restoreMicrophoneMute()
                 reportAudioState("mic-refused", id)
             } else {
                 reportAudioState("mic-running", id)
@@ -441,7 +445,47 @@ class AndroidMediaSink(
             microphoneUplinks.remove(id)?.close()
         } finally {
             restoreAudioMode(id)
+            restoreMicrophoneMute()
         }
+    }
+
+    /**
+     * Switches the system microphone mute off before a capture.
+     *
+     * `AudioManager.setMicrophoneMute` is global on Android 4.4 and outlives whoever set it, and a capture
+     * under it records only zeros -- the diagnostic page names it (`micMute=true`) but nothing undid it.
+     * Put back by [restoreMicrophoneMute] once the last capture ends, so the car is left as it was found.
+     */
+    private fun clearMicrophoneMute(id: AudioStreamId) {
+        val manager = audioManager ?: return
+        val line = synchronized(audioModeLock) {
+            if (microphoneMuteCleared) return
+            val muted = runCatching { manager.isMicrophoneMute }.getOrNull() ?: return
+            if (!muted) return
+            try {
+                manager.isMicrophoneMute = false
+                microphoneMuteCleared = true
+                "Audio: micMute cleared before capture stream=${id.type} now=${manager.isMicrophoneMute}"
+            } catch (error: RuntimeException) {
+                "Audio: micMute clear failed stream=${id.type} error=${error.javaClass.simpleName}"
+            }
+        }
+        runCatching { onAudioDiagnostic(line) }
+    }
+
+    private fun restoreMicrophoneMute() {
+        val manager = audioManager ?: return
+        val line = synchronized(audioModeLock) {
+            if (!microphoneMuteCleared || microphoneUplinks.isNotEmpty()) return
+            microphoneMuteCleared = false
+            try {
+                manager.isMicrophoneMute = true
+                "Audio: micMute restored now=${manager.isMicrophoneMute}"
+            } catch (error: RuntimeException) {
+                "Audio: micMute restore failed error=${error.javaClass.simpleName}"
+            }
+        }
+        runCatching { onAudioDiagnostic(line) }
     }
 
     /**
@@ -549,6 +593,7 @@ class AndroidMediaSink(
         } finally {
             microphoneUplinks.clear()
             restoreAudioMode(null)
+            restoreMicrophoneMute()
         }
     }
 

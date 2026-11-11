@@ -624,7 +624,9 @@
     <string name="microphone_status_checking">Checking the head unit microphone…</string>
     <string name="microphone_status_available">Microphone: available, CarPlay voice input can use it</string>
     <string name="microphone_status_blocked">Microphone: held by the head unit voice assistant, so CarPlay cannot hear you</string>
-    <string name="microphone_status_hint">If it is held, switch the car voice wake word (嗨领克 / 小度小度) off in the head unit settings; CarPlay then owns the microphone.</string>
+    <string name="microphone_status_hint">If the other side of a call cannot hear you, or Siri cannot hear you: tap the smiley icon at the top left of the head unit and switch off the 小度小度 and 嗨领克 voice wake words, then call again. While they are on, the head unit keeps the microphone.</string>
+    <string name="microphone_blocked_notice">The head unit voice wake word is holding the microphone, so the other side may not hear you. Tap the smiley icon at the top left of the head unit, switch off 小度小度 and 嗨领克, then call again.</string>
+    <string name="voice_wake_home_hint">Caller cannot hear you? Tap the smiley icon at the top left of the head unit and switch off the 小度小度 and 嗨领克 voice wake words.</string>
     <string name="screen_corner_mask">Screen corner mask</string>
     <string name="screen_corner_mask_description">The visible screen opening has rounded corners, so a full-screen CarPlay picture is clipped by the car\'s bezel there. This paints the screen\'s four corners black in the same curve, so CarPlay fits the opening exactly. Off by default; turn it on only if the car clips the picture.</string>
     <string name="settings_category_other">Other</string>

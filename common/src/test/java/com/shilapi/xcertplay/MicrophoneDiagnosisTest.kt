@@ -31,12 +31,47 @@ class MicrophoneDiagnosisTest {
             "frames=1500 silentFrames=1500 peakMax=$peak readErrors=0 emptyEncodedFrames=0 udpSent=1500 sendErrors=0",
     ) + (if (mode) listOf("10:00:01.001  Audio: mode entered communication from=0 now=3 stream=AudioStreamId") else emptyList())
 
-    @Test fun silentTelephonyCaptureBlamesTheEffectsFirst() {
+    @Test fun silentTelephonyCaptureAsksForTheVoiceWakeFirstThenTheEffects() {
         val text = conclusion(call(peak = 5))
         assertTrue(text, text.contains("几乎全是静音"))
         assertTrue(text, text.contains("最大音量 5"))
         assertTrue(text, text.contains("回声消除/降噪已启用"))
-        assertTrue(next(call(peak = 5)).contains("debug.diplay.mic_effects 0"))
+        assertTrue(text, text.contains("语音唤醒"))
+        val step = next(call(peak = 5))
+        assertTrue(step, step.contains("笑脸图标"))
+        assertTrue(step, step.contains("debug.diplay.mic_effects 0"))
+        assertTrue(step, step.indexOf("笑脸图标") < step.indexOf("debug.diplay.mic_effects 0"))
+    }
+
+    @Test fun silentNonTelephonyCaptureAsksForTheVoiceWake() {
+        val lines = listOf(
+            "10:00:01.000  Microphone: start type=default source=MIC codec=OPUS rate=48000 channels=1 frameMs=20 " +
+                "routedDeviceType=unknown actualSource=VOICE_COMMUNICATION",
+            "10:00:11.000  Microphone: summary type=default source=MIC codec=OPUS rate=48000 channels=1 frameMs=20 " +
+                "seconds=10 captureBytes=960000 frames=500 silentFrames=500 peakMax=0 readErrors=0 " +
+                "emptyEncodedFrames=0 udpSent=500 sendErrors=0",
+        )
+        assertTrue(next(lines), next(lines).contains("小度小度"))
+    }
+
+    @Test fun everySourceRefusedAsksForTheVoiceWake() {
+        val lines = listOf(
+            telephonySetup,
+            "10:00:01.003  Microphone: failure type=telephony $meta stage=RECORDER_INITIALIZATION error=none reason=none code=none",
+        )
+        assertTrue(next(lines), next(lines).contains("嗨领克"))
+    }
+
+    @Test fun aMuteClearedBeforeTheCaptureIsNotBlamed() {
+        val lines = call(peak = 0) + listOf(
+            "10:00:01.001  Audio: state when=mic-requested type=telephony stream=100 mode=3 micMute=true speaker=false " +
+                "scoOn=false scoOffCall=false a2dpOn=false wiredHeadset=false musicActive=false voiceVolume=5/7 ringer=2 activeUplinks=0",
+            "10:00:01.002  Audio: micMute cleared before capture stream=100 now=false",
+            "10:00:01.005  Audio: state when=mic-running type=telephony stream=100 mode=3 micMute=false speaker=false " +
+                "scoOn=false scoOffCall=false a2dpOn=false wiredHeadset=false musicActive=false voiceVolume=5/7 ringer=2 activeUplinks=1",
+        )
+        assertTrue(conclusion(lines), !conclusion(lines).contains("micMute=true"))
+        assertTrue(next(lines), next(lines).contains("笑脸图标"))
     }
 
     @Test fun withEffectsOffTheNextStepIsTheMode() {
@@ -75,14 +110,14 @@ class MicrophoneDiagnosisTest {
         assertTrue(text, text.contains("下行声音一直没开始"))
     }
 
-    @Test fun everySourceRefusedNamesTheVoiceAssistant() {
+    @Test fun everySourceRefusedNamesTheVoiceWake() {
         val lines = listOf(
             telephonySetup,
             "10:00:01.000  Audio: downlink started type=telephony stream=100 codec=OPUS rate=48000 channels=1",
             "10:00:01.002  Microphone: probe type=telephony $meta candidate=VOICE_COMMUNICATION result=-3",
             "10:00:01.003  Microphone: failure type=telephony $meta stage=RECORDER_INITIALIZATION error=none reason=none code=none",
         )
-        assertTrue(conclusion(lines).contains("语音助手"))
+        assertTrue(conclusion(lines).contains("语音唤醒"))
     }
 
     @Test fun nothingSentIsReported() {

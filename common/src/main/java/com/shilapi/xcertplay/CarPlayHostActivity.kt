@@ -666,6 +666,9 @@ class CarPlayHostActivity : ComponentActivity() {
         }
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         initializeSessionLog()
+        // Before any session starts: the service may start the shared watchdog first, and its lines
+        // must reach this log rather than only logcat (which this ROM does not show).
+        PhoneMediaAudioWatchdog.shared(this).attachLog(mediaAudioLogSink)
         lastConfiguration = Configuration(resources.configuration)
         darkMode = savedInstanceState?.getBoolean("carplay_night_active")
             ?: nightModeOrNull(resources.configuration.uiMode) ?: false
@@ -999,6 +1002,7 @@ class CarPlayHostActivity : ComponentActivity() {
             )
         }
         attachCallBanner()
+        attachMicrophoneNotice()
     }
 
     /**
@@ -1018,20 +1022,74 @@ class CarPlayHostActivity : ComponentActivity() {
             CallBannerOverlay(this) { line -> appendLog(line) }
         }.onFailure {
             Log.w(TAG, "call banner unavailable", it)
-        }.getOrNull()?.also { callBanner = it } ?: return
+        }.getOrNull()?.also { callBanner = it }
+        // Set even without a banner: the call is also the moment the phone's HFP must be gone.
         com.shilapi.xcertplay.glance.CarPlayGlance.callListener = { notice ->
-            mainHandler.post {
-                banner.update(notice, { controller?.answerCall() }, { controller?.endCall() })
+            onCallNotice(notice)
+            if (banner != null) {
+                mainHandler.post {
+                    banner.update(notice, { controller?.answerCall() }, { controller?.endCall() })
+                }
             }
         }
         // A call that was already up when this activity attached still gets its banner.
-        mainHandler.post {
-            banner.update(
-                com.shilapi.xcertplay.glance.CarPlayGlance.currentBanner(),
-                { controller?.answerCall() },
-                { controller?.endCall() },
-            )
+        if (banner != null) {
+            mainHandler.post {
+                banner.update(
+                    com.shilapi.xcertplay.glance.CarPlayGlance.currentBanner(),
+                    { controller?.answerCall() },
+                    { controller?.endCall() },
+                )
+            }
         }
+    }
+
+    /** Whether the last call notice described a call, so only the start of one triggers the release. */
+    @Volatile private var callNoticeUp = false
+
+    /**
+     * A CarPlay call just appeared (ringing, dialling, or an inferred VOIP call): make sure the phone's HFP
+     * is not connected to the head unit right now. The watchdog only checks every 5 s, and an HFP the
+     * iPhone re-attached inside that gap lets the car's own Bluetooth dialer take the call.
+     */
+    private fun onCallNotice(notice: com.shilapi.xcertplay.glance.CallBanner?) {
+        val appeared = notice != null && !callNoticeUp
+        callNoticeUp = notice != null
+        if (!appeared || !CarPlayBackgroundSession.active) return
+        val kind = if (notice?.ringing == true) "ringing" else "active"
+        releasePhoneBluetoothOnEvent(applicationContext, "call $kind") { appendLog(it) }
+    }
+
+    /** Set once a blocked-microphone notice was shown for the current session; cleared on session active. */
+    @Volatile private var microphoneNoticeShown = false
+
+    private val microphoneNoticeListener: (com.shilapi.xcertplay.media.MicrophoneBlockedNotice.Reason) -> Unit = { reason ->
+        mainHandler.post {
+            if (!microphoneNoticeShown && !isFinishing) {
+                microphoneNoticeShown = true
+                appendLog("Microphone: blocked notice shown reason=${reason.token}")
+                // A toast, not a dialog: this lands over CarPlay while the driver is on a call, so it must
+                // not take focus or need a tap. Shown twice to stay up for about seven seconds.
+                repeat(2) {
+                    runCatching {
+                        android.widget.Toast.makeText(
+                            this,
+                            getString(R.string.microphone_blocked_notice),
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Tells the driver, during the call, that the head unit's voice wake word is holding the microphone.
+     * Without it the only sign was the far end hearing nothing, and the reason only appeared on the
+     * diagnostic page after hanging up. Detection lives in [com.shilapi.xcertplay.media.MicrophoneUplink].
+     */
+    private fun attachMicrophoneNotice() {
+        com.shilapi.xcertplay.media.MicrophoneBlockedNotice.listener = microphoneNoticeListener
     }
 
     // Hardware navigation belongs to the iPhone-rendered CarPlay UI, not Android View focus.
@@ -1130,6 +1188,8 @@ class CarPlayHostActivity : ComponentActivity() {
         com.shilapi.xcertplay.glance.CarPlayGlance.callListener = null
         callBanner?.release()
         callBanner = null
+        PhoneMediaAudioWatchdog.shared(this).detachLog(mediaAudioLogSink)
+        com.shilapi.xcertplay.media.MicrophoneBlockedNotice.detach(microphoneNoticeListener)
         nightModeController.pause()
         pictureBinding?.close()
         pictureBinding = null
@@ -2057,7 +2117,11 @@ class CarPlayHostActivity : ComponentActivity() {
      * iPhone stays A2DP-paired to this head unit, so iOS 26 even asks for the link to go away itself
      * (the `disableBluetooth` command below).
      */
-    private val mediaAudioWatchdog by lazy { PhoneMediaAudioWatchdog(this) { appendLog(it) } }
+    private val mediaAudioWatchdog: PhoneMediaAudioWatchdog
+        get() = PhoneMediaAudioWatchdog.shared(this).also { it.attachLog(mediaAudioLogSink) }
+
+    /** This activity's session log, attached to the shared watchdog and detached again in onDestroy. */
+    private val mediaAudioLogSink: (String) -> Unit = { appendLog(it) }
 
     /** Whether a lost session still owes the phone its Bluetooth back. See [MediaAudioRestorePolicy]. */
     private val mediaAudioRestorePolicy = MediaAudioRestorePolicy()
@@ -2101,6 +2165,8 @@ class CarPlayHostActivity : ComponentActivity() {
                 // A live session is no longer owed the phone's Bluetooth, so a grace armed by an earlier
                 // loss is dropped before anything else can fire it.
                 cancelMediaAudioRestore()
+                // A new session may tell the driver about a held microphone again.
+                microphoneNoticeShown = false
                 // Started here as well as by DiPlaySessionService: the release is what keeps the phone
                 // playing at all, and the service is not always the thing that brought the session up.
                 mediaAudioWatchdog.startQuietly()

@@ -623,7 +623,9 @@
     <string name="microphone_status_checking">正在检测车机麦克风…</string>
     <string name="microphone_status_available">麦克风：可用，CarPlay 语音输入能使用它</string>
     <string name="microphone_status_blocked">麦克风：被车机语音助手占用，CarPlay 听不到你说话</string>
-    <string name="microphone_status_hint">若被占用，请在车机设置里关闭语音唤醒（嗨领克 / 小度小度），CarPlay 即可独占麦克风。</string>
+    <string name="microphone_status_hint">通话时对方听不到你、或 Siri 听不见：点车机左上角的笑脸图标，关掉「小度小度」和「嗨领克」的语音唤醒，然后重新拨打。语音唤醒开着时车机会一直占用麦克风。</string>
+    <string name="microphone_blocked_notice">车机麦克风被语音唤醒占用，对方可能听不到你。请点车机左上角的笑脸图标，关掉「小度小度」和「嗨领克」，然后重新拨打。</string>
+    <string name="voice_wake_home_hint">通话对方听不到你？点车机左上角笑脸图标，关掉「小度小度」和「嗨领克」的语音唤醒。</string>
     <string name="screen_corner_mask">屏幕四角圆角遮罩</string>
     <string name="screen_corner_mask_description">车机可视屏幕的开口是圆角的，满屏的 CarPlay 画面在四角会被车身边框裁掉。开启后在屏幕四角按相同弧度涂黑，让 CarPlay 画面正好贴合影屏开口。默认关闭；只有车机确实裁掉画面四角时才需要打开。</string>
     <string name="settings_category_other">其他</string>

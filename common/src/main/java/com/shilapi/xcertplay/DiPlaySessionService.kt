@@ -9,7 +9,8 @@ import com.shilapi.xcertplay.host.R
 
 /** Keeps an explicitly started connection alive when another car app is in the foreground. */
 class DiPlaySessionService : Service() {
-    private val mediaAudio by lazy { PhoneMediaAudioWatchdog(this) }
+    /** The same process-wide watchdog the host activity uses; see [PhoneMediaAudioWatchdog.shared]. */
+    private val mediaAudio get() = PhoneMediaAudioWatchdog.shared(this)
 
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

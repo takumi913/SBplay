@@ -164,6 +164,7 @@ internal class MicrophoneUplink(
         if (nextRecorder == null) {
             Log.w(TAG, "microphone unavailable on every source rate=${config.sampleRate}")
             stats.failure(MicrophoneFailureStage.RECORDER_INITIALIZATION)
+            reportBlocked(MicrophoneBlockedNotice.Reason.ALL_SOURCES_REFUSED)
             nextEncoder?.close()
             running.set(false)
             return false
@@ -343,6 +344,8 @@ internal class MicrophoneUplink(
         var levelPeak = 0
         var levelFrames = 0
         var endedBy = "closed"
+        val silence = DigitalSilenceDetector(config.sampleRate)
+        val samplesPerFrame = frame.size / 2 / maxOf(1, config.channels)
         try {
             while (running.get()) {
                 stats.reading()
@@ -374,6 +377,9 @@ internal class MicrophoneUplink(
                         val framePeak = peakOf(frame)
                         stats.level(framePeak, sumAbsOf(frame), frame.size / 2)
                         levelPeak = maxOf(levelPeak, framePeak)
+                        if (silence.onFrame(framePeak, samplesPerFrame)) {
+                            reportBlocked(MicrophoneBlockedNotice.Reason.DIGITAL_SILENCE)
+                        }
                         if (++levelFrames >= LEVEL_FRAMES_PER_LOG) {
                             Log.i(TAG, "microphone level peak=$levelPeak frames=$levelFrames")
                             levelPeak = 0
@@ -438,6 +444,18 @@ internal class MicrophoneUplink(
     }
 
     private fun routeType(recorder: AudioRecord): Int? = runCatching { recorderRouteTypeCompat(recorder) }.getOrNull()
+
+    /**
+     * The car's voice wake word most likely holds the microphone: say so in the report and on screen.
+     * The report line is what the diagnostic page and a later readback grep for.
+     */
+    private fun reportBlocked(reason: MicrophoneBlockedNotice.Reason) {
+        val message = "Microphone: blocked type=${config.audioType.take(24).filter { it.isLetterOrDigit() }} " +
+            "reason=${reason.token}"
+        Log.w(TAG, message)
+        runCatching { onDiagnostic(message) }
+        MicrophoneBlockedNotice.publish(reason)
+    }
 
     override fun close() {
         if (!running.compareAndSet(true, false)) {

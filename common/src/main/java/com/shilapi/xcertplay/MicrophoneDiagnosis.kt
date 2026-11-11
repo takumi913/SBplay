@@ -22,6 +22,12 @@ internal object MicrophoneDiagnosis {
 
     private val CALL_TYPES = listOf("telephony", "default", "compatibility", "other")
 
+    /**
+     * 车机语音唤醒（小度小度 / 嗨领克）一直开着麦克风监听，是 CS11 上 CarPlay 录到静音或开不了麦的
+     * 首要原因（2026-11-11 车主反馈：关掉后麦克风正常）。静音类结论的第一步都先让人关它。
+     */
+    const val VOICE_WAKE_FIX = "点车机左上角的笑脸图标，关掉「小度小度」和「嗨领克」的语音唤醒，然后挂断重新拨打一次。"
+
     private class Capture(val type: String, val actualSource: String?) {
         var summary: String? = null
         val stats = mutableListOf<String>()
@@ -76,7 +82,7 @@ internal object MicrophoneDiagnosis {
         val raw = lines.filter { line ->
             line.contains("Audio: setup ") || line.contains("Audio: downlink ") ||
                 line.contains("Microphone: ") || line.contains("Audio: mode ") ||
-                line.contains("Audio: state ") ||
+                line.contains("Audio: state ") || line.contains("Audio: micMute ") ||
                 line.contains("Call: ") || line.contains("hfp=")
         }
         if (raw.isNotEmpty()) {
@@ -125,7 +131,12 @@ internal object MicrophoneDiagnosis {
 
         failures.lastOrNull()?.let { line ->
             val stage = field(line, "stage") ?: "?"
-            return failureVerdict(stage, line) to "把这一页拍下来；下面的 probe 行说明每个录音音源的结果。"
+            val next = if (stage == "RECORDER_INITIALIZATION" || stage == "RECORDER_CREATION") {
+                "$VOICE_WAKE_FIX 关掉后还是这样，再把这一页拍下来；下面的 probe 行说明每个录音音源的结果。"
+            } else {
+                "把这一页拍下来；下面的 probe 行说明每个录音音源的结果。"
+            }
+            return failureVerdict(stage, line) to next
         }
 
         val planned = setups.filter { field(it, "mic") == "planned" }
@@ -184,7 +195,10 @@ internal object MicrophoneDiagnosis {
             return "车机这一端正常：录到了声音（最大音量 $peak）并持续发给了 iPhone（${totals.udpSent} 包，无失败）。" +
                 "对方仍听不到的话，问题在 iPhone 收到之后（解码或格式协商）。" to photo
         }
-        val muted = states.any { field(it, "micMute") == "true" }
+        // `mic-requested` is logged before the capture clears the mute, so it only counts when it is the
+        // only state there is; the running/stopping states say whether the mute was really on.
+        val muted = states.filter { field(it, "when") != "mic-requested" }.ifEmpty { states }
+            .any { field(it, "micMute") == "true" }
         val allZero = totals.zeroFrames != null && totals.frames != null && totals.frames > 0 &&
             totals.zeroFrames >= totals.frames
         val head = "车机麦克风录到的几乎全是静音（最大音量 $peak，正常说话应在几千以上），但照常发给了 iPhone，所以对方什么都听不到。" +
@@ -193,11 +207,14 @@ internal object MicrophoneDiagnosis {
             (if (muted) "日志里系统麦克风静音（micMute=true）处于开启状态，这本身就会让录音全是静音。" else "")
         if (muted) {
             return head to "这是系统层面的静音开关（AudioManager.setMicrophoneMute），不是本应用设置的；" +
-                "把这一页拍下来，下一版可以在开麦时强制解除。"
+                "本版开麦前会先解除它，录音期间仍是开启说明解除没生效（看日志里的 Audio: micMute 行）。$photo"
         }
+        // 这一句放在类型判断之前：不论走哪一类，车机语音唤醒占着麦克风都是最常见的原因。
+        val wake = "最常见的原因是车机语音唤醒（小度小度 / 嗨领克）一直占着麦克风。"
         if (capture.type != "telephony") {
-            return head + "这次走的是 ${capture.type} 类型，两个通话开关对它不生效；" +
-                "静音来自录音输入本身（实际音源 ${capture.actualSource ?: "未知"}），可能是车机语音助手或别的程序占着真实的麦克风输入。" to photo
+            return head + wake + "这次走的是 ${capture.type} 类型，两个通话开关对它不生效；" +
+                "静音来自录音输入本身（实际音源 ${capture.actualSource ?: "未知"}）。" to
+                "$VOICE_WAKE_FIX 关掉后还是静音，再$photo"
         }
         val effectLine = effects.lastOrNull { field(it, "type") == "telephony" }
         val effectState = when {
@@ -212,7 +229,7 @@ internal object MicrophoneDiagnosis {
             modeSwitch == "off" -> "开关已关"
             else -> "未进入"
         }
-        val nextStep = when {
+        val switchStep = when {
             effectLine != null && field(effectLine, "applied") == "yes" ->
                 "先只关回声消除再打一次：adb shell setprop debug.diplay.mic_effects 0；" +
                     "还是静音就再关通话模式：adb shell setprop debug.diplay.mic_mode 0。每次打完都看本页。"
@@ -221,12 +238,13 @@ internal object MicrophoneDiagnosis {
             else ->
                 "两个开关都已关闭仍是静音，问题在录音输入本身；$photo"
         }
-        return head + "这次是 telephony 通话：回声消除/降噪$effectState，通话模式$modeState。" to nextStep
+        return head + wake + "这次是 telephony 通话：回声消除/降噪$effectState，通话模式$modeState。" to
+            "第一步：$VOICE_WAKE_FIX 语音唤醒已经关了仍是静音，再试：$switchStep"
     }
 
     private fun failureVerdict(stage: String, line: String): String = when (stage) {
         "RECORDER_INITIALIZATION", "RECORDER_CREATION" ->
-            "车机拒绝了所有录音音源，麦克风没打开；通常是车机自带的语音助手占着麦克风。"
+            "车机拒绝了所有录音音源，麦克风没打开；通常是车机语音唤醒（小度小度 / 嗨领克）占着麦克风。"
         "SOCKET_CREATION" ->
             "录音能打开，但建立回传 iPhone 的通道失败（reason=${field(line, "reason") ?: "?"}）。"
         "ENCODER" -> "车机上没有可用的 Opus 编码器，无法给 iPhone 发声音。"

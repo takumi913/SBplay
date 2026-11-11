@@ -92,6 +92,9 @@ internal class MediaAudioRestorePolicy {
  * stopped anywhere. Measured on the car on 2026-10-15 13:13: both were ticking
  * `bluetooth profiles a2dp=false hfp=false` (interleaved 1.1 s apart, one per 5 s), so a single
  * `stop()` and the `restore()` inside it could not stick: the survivor re-releases within one tick.
+ *
+ * Since 2026-11-11 both owners share [PhoneMediaAudioWatchdog.shared], so this set holds one instance;
+ * it is kept so the end of a session still stops whatever exists without knowing who built it.
  */
 private val liveWatchdogs: MutableSet<PhoneMediaAudioWatchdog> =
     java.util.Collections.newSetFromMap(java.util.WeakHashMap())
@@ -100,31 +103,44 @@ private val liveWatchdogs: MutableSet<PhoneMediaAudioWatchdog> =
  * Runs [PhoneMediaAudioWatcher] on a background thread against the real A2DP profile.
  *
  * The iPhone may re-establish A2DP on its own, so the check is periodic rather than a one-shot.
- */
-/**
- * @param onLog also receives every line this watchdog writes.
  *
  * Measured on the car on 2026-10-13: the app's `Log.i` output does not reach logcat on this ROM, so a
  * watchdog that logged only there was invisible -- the field log showed the `disableBluetooth` handler
  * running and then nothing at all from the release, which read as "never called" when the release had in
- * fact run and answered false. The caller passes its own diagnostic sink (CarPlayHostActivity passes
- * `appendLog`) so these lines land in `/sdcard/DiPlay/logs/`.
+ * fact run and answered false. The host activity attaches its own diagnostic sink (`appendLog`, see
+ * [attachLog]) so these lines land in the session log.
+ *
+ * One instance per process ([shared]); see there for why.
  */
-internal class PhoneMediaAudioWatchdog(
+internal class PhoneMediaAudioWatchdog private constructor(
     private val context: Context,
-    private val onLog: (String) -> Unit = {},
 ) {
     init {
         liveWatchdogs.add(this)
+    }
+
+    /**
+     * Where this watchdog's lines go besides logcat. The host activity attaches its session log while it
+     * lives ([attachLog] / [detachLog]); the service has no log of its own, so it attaches nothing.
+     */
+    @Volatile private var logSink: ((String) -> Unit)? = null
+
+    fun attachLog(sink: (String) -> Unit) {
+        logSink = sink
+    }
+
+    /** Detaches [sink] only if it is still the attached one, so a newer activity's sink survives. */
+    fun detachLog(sink: (String) -> Unit) {
+        if (logSink === sink) logSink = null
     }
 
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
     private var proxy: BluetoothProfile? = null
     private var device: BluetoothDevice? = null
-    private var watcher: PhoneMediaAudioWatcher? = null
+    @Volatile private var watcher: PhoneMediaAudioWatcher? = null
     private var phoneAddress: String? = null
-    private var running = false
+    @Volatile private var running = false
 
     private val listener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
@@ -137,13 +153,24 @@ internal class PhoneMediaAudioWatchdog(
         }
     }
 
+    @Synchronized
     fun start() {
+        val adapter = runCatching { context.systemServiceOrNull(BluetoothManager::class.java)?.adapter ?: android.bluetooth.BluetoothAdapter.getDefaultAdapter() }.getOrNull()
         if (running) {
-            // Said out loud because "already running" and "never asked" looked identical in the field log.
-            log("phone media watchdog already running for $phoneAddress")
+            // The address can change under a running watchdog: the first start of a session may have had to
+            // guess the bonded iPhone, and the phone's own deviceId (onDeviceInfo) arrives afterwards. The
+            // watcher's vendor link captured the old address, and its disconnect refuses any device that is
+            // not that one ("connected device is not the selected phone"), so with two iPhones paired a
+            // wrong guess left the real phone's HFP connected for the whole drive. Follow the new address.
+            val current = currentAddress(adapter)
+            if (adapter != null && current != null && !current.equals(phoneAddress, ignoreCase = true)) {
+                retarget(adapter, current)
+            } else {
+                // Said out loud because "already running" and "never asked" looked identical in the field log.
+                log("phone media watchdog already running for $phoneAddress")
+            }
             return
         }
-        val adapter = runCatching { context.systemServiceOrNull(BluetoothManager::class.java)?.adapter ?: android.bluetooth.BluetoothAdapter.getDefaultAdapter() }.getOrNull()
         // The stored address is the one the pairing flow saved, and it is only written there -- so on a
         // wired session it can still be missing and this watchdog used to log
         // `phone media watchdog not started (adapter=true address=false)` and never release anything
@@ -159,16 +186,10 @@ internal class PhoneMediaAudioWatchdog(
         // comes back as "bad phone address" -- measured on 2026-10-13, which left the periodic re-check
         // switched off while the direct release (which validated first) worked, so a phone that
         // re-established HFP mid-drive was never released again.
-        val stored = validPhoneAddress(DiPlayPreferences.phoneBluetoothAddress(context))
-            ?: validPhoneAddress(DiPlayPreferences.phoneAddress(context))
-        val address = stored?.takeIf { it.isNotBlank() } ?: bondedIphoneAddress(adapter)
+        val address = currentAddress(adapter)
         if (adapter == null || address.isNullOrBlank()) {
             log("phone media watchdog not started (adapter=${adapter != null} address=${!address.isNullOrBlank()})")
             return
-        }
-        if (address != stored) {
-            log("phone media watchdog using the bonded iPhone $address (stored=$stored)")
-            runCatching { DiPlayPreferences.savePhone(context, address, DiPlayPreferences.phoneName(context)) }
         }
         val remote = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
         if (remote == null) {
@@ -193,6 +214,38 @@ internal class PhoneMediaAudioWatchdog(
         handler?.post(tick)
     }
 
+    /** The stored phone, else the bonded iPhone (saved so the next start finds it); null when neither. */
+    private fun currentAddress(adapter: BluetoothAdapter?): String? {
+        val stored = validPhoneAddress(DiPlayPreferences.phoneBluetoothAddress(context))
+            ?: validPhoneAddress(DiPlayPreferences.phoneAddress(context))
+        val address = stored?.takeIf { it.isNotBlank() } ?: bondedIphoneAddress(adapter) ?: return null
+        if (address != stored) {
+            log("phone media watchdog using the bonded iPhone $address (stored=$stored)")
+            runCatching { DiPlayPreferences.savePhone(context, address, DiPlayPreferences.phoneName(context)) }
+        }
+        return address
+    }
+
+    /**
+     * Points the running watchdog at [address] without a stop/start: `stop()` gives the phone its
+     * Bluetooth back, which is the opposite of what a session that is still live needs. The tick thread
+     * reads [watcher] fresh on every run, so swapping it is enough.
+     */
+    private fun retarget(adapter: BluetoothAdapter, address: String) {
+        val remote = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
+        if (remote == null) {
+            log("phone media watchdog kept $phoneAddress (new address $address rejected)")
+            return
+        }
+        log("phone media watchdog now follows $address (was $phoneAddress)")
+        device = remote
+        phoneAddress = address
+        watcher = PhoneMediaAudioWatcher(AndroidMediaAudioLink(), ::log)
+        // Check the new phone now rather than at the next 5 s tick.
+        handler?.post { if (running) runCatching { watcher?.tick() } }
+    }
+
+    @Synchronized
     fun stop() {
         if (!running) return
         running = false
@@ -245,10 +298,14 @@ internal class PhoneMediaAudioWatchdog(
         override fun release(): Boolean {
             // See `state()`: a tick already past its own guard must not undo a restore either.
             if (restoreRequested.get()) return false
-            vendor.disconnect()?.let { if (it) return true }
+            val media = vendor.disconnect() == true
+            if (restoreRequested.get()) return media
             // CarPlay has to own phone calls: while HFP stays connected the head unit's own dialer
             // takes the call over and CarPlay's telephony stream never carries its audio.
-            if (vendor.disconnectHfp() == true) return true
+            // Both profiles in the same tick: returning after A2DP used to leave HFP connected until
+            // the next tick, 5 s later, and a call arriving in that gap rang on the car's own dialer.
+            val handsFree = vendor.isHfpConnected() != false && vendor.disconnectHfp() == true
+            if (media || handsFree) return true
             return callProfileMethod("disconnect")
         }
 
@@ -281,12 +338,27 @@ internal class PhoneMediaAudioWatchdog(
     internal fun log(message: String) {
         Log.i(TAG, message)
         // The file sink is the one that survives on this ROM; a failure here must never cost the release.
-        runCatching { onLog(message) }
+        runCatching { logSink?.invoke(message) }
     }
 
-    private companion object {
-        const val TAG = "DiPlay-BtAudio"
-        const val INTERVAL_MILLIS = 5_000L
+    companion object {
+        private const val TAG = "DiPlay-BtAudio"
+        private const val INTERVAL_MILLIS = 5_000L
+
+        @Volatile private var instance: PhoneMediaAudioWatchdog? = null
+
+        /**
+         * The process's one watchdog.
+         *
+         * There used to be one per owner -- `DiPlaySessionService` and the host activity each built their
+         * own -- so two ticked side by side (measured 2026-10-15 13:13, interleaved 1.1 s apart), only one
+         * of them wrote to the session log, and a stop of one was undone by the other's next tick. Both
+         * owners now share this instance; [restorePhoneMediaAudio] still stops it for everyone.
+         */
+        fun shared(context: Context): PhoneMediaAudioWatchdog =
+            instance ?: synchronized(this) {
+                instance ?: PhoneMediaAudioWatchdog(context.applicationContext ?: context).also { instance = it }
+            }
     }
 }
 
@@ -475,6 +547,27 @@ internal fun releasePhoneA2dpRetrying(
         }
     }
     handler.post(task)
+}
+
+/**
+ * Releases the phone's A2DP/HFP now because an event says they may be back, instead of waiting for the
+ * watchdog's next 5 s tick.
+ *
+ * The tick leaves a gap: the iPhone re-attaches HFP by itself, and a call that rings inside that gap is
+ * taken by the head unit's own Bluetooth dialer instead of CarPlay. Two events close it -- a CarPlay call
+ * appearing (iAP2 CallStateUpdate / the inferred VOIP call) and the phone's Bluetooth ACL coming back
+ * while a session is live. The ladder is used because a fresh ACL brings HFP/A2DP up a second or more
+ * after it, and the ladder stops at its first success.
+ *
+ * Callers check that a session is live; this only refuses while the phone is owed its link back.
+ */
+internal fun releasePhoneBluetoothOnEvent(context: Context, reason: String, onLog: (String) -> Unit = {}) {
+    if (restoreRequested.get()) {
+        onLog("bluetooth release on $reason skipped: the session already gave the phone its Bluetooth back")
+        return
+    }
+    onLog("bluetooth release requested by $reason")
+    releasePhoneA2dpRetrying(context, onLog)
 }
 
 /**

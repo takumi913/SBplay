@@ -16,12 +16,12 @@ class PhoneBluetoothReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         // The wireless path can run without any activity being created; capture before it starts threads.
         com.shilapi.xcertplay.compat.WorkerThreads.capture()
-        if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED ||
-            !DiPlayPreferences.connectOnPhoneBluetooth(context) ||
-            CarPlayBackgroundSession.hasSession()
-        ) {
+        if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
+        if (CarPlayBackgroundSession.hasSession()) {
+            if (CarPlayBackgroundSession.active) releaseDuringSession(context, intent)
             return
         }
+        if (!DiPlayPreferences.connectOnPhoneBluetooth(context)) return
         val selected = DiPlayPreferences.phoneAddress(context) ?: return
         @Suppress("DEPRECATION")
         val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
@@ -46,6 +46,23 @@ class PhoneBluetoothReceiver : BroadcastReceiver() {
                 PhoneWakeDiagnostics.record(context, "failed", error)
                 Log.w("DiPlayPhoneWake", "Bluetooth wake launch failed: ${error.javaClass.simpleName}")
             }
+    }
+
+    /**
+     * The phone's Bluetooth came back while CarPlay is live: release its A2DP/HFP now rather than at the
+     * watchdog's next tick, so a call that rings right after cannot land on the car's own dialer.
+     * Only for the CarPlay phone (or any phone while none is stored); the release itself also refuses
+     * any other device.
+     */
+    private fun releaseDuringSession(context: Context, intent: Intent) {
+        @Suppress("DEPRECATION")
+        val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+        val address = runCatching { device.address }.getOrNull() ?: return
+        val stored = validPhoneAddress(DiPlayPreferences.phoneBluetoothAddress(context))
+            ?: validPhoneAddress(DiPlayPreferences.phoneAddress(context))
+        if (stored != null && !stored.equals(address, ignoreCase = true)) return
+        val watchdog = PhoneMediaAudioWatchdog.shared(context)
+        releasePhoneBluetoothOnEvent(context.applicationContext ?: context, "phone bluetooth reconnected") { watchdog.log(it) }
     }
 
     companion object {

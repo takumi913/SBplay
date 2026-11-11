@@ -624,6 +624,9 @@ class DiPlayActivity : ComponentActivity() {
         setupError?.let {
             pad.addView(label(it, 12, WARNING).apply { setPadding(0, dp(10), 0, 0) })
         }
+        // The CS11's own voice wake word keeps the microphone, and CarPlay calls then send silence. The
+        // settings hint alone was never seen; this line is where the driver looks before connecting.
+        pad.addView(label(getString(R.string.voice_wake_home_hint), 12, MUTED).apply { setPadding(0, dp(10), 0, 0) })
     }
 
     /**
@@ -1545,8 +1548,9 @@ class DiPlayActivity : ComponentActivity() {
             navigationChannelControl(card)
             callChannelControl(card)
             audioDecoderControl(card)
-            // The head unit can keep the microphone for its own voice assistant, and CarPlay voice
-            // input then fails silently; the hint below says so. The live AVAILABLE/BLOCKED badge is not
+            // The head unit can keep the microphone for its own voice wake word, and CarPlay voice
+            // input then fails silently; the hint below says how to switch it off (smiley icon, top left).
+            // The app never turns the wake word off itself. The live AVAILABLE/BLOCKED badge is not
             // probed from this screen any more:
             //
             // on this ROM (CS11, Android 4.4 / Dalvik) constructing a Thread from inside this settings
